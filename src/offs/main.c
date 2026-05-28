@@ -118,9 +118,10 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  /* start/restart spawn the daemon and don't need a socket connection */
+  /* start/restart/version spawn or print info and don't need a socket connection */
   int needs_client = 1;
-  if (strcmp(command_name, "start") == 0 || strcmp(command_name, "restart") == 0) {
+  if (strcmp(command_name, "start") == 0 || strcmp(command_name, "restart") == 0 ||
+      strcmp(command_name, "version") == 0) {
     needs_client = 0;
   }
 
