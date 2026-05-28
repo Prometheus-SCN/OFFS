@@ -47,9 +47,10 @@ int cmd_get(int argc, char** argv, cli_client_t* client) {
     if (type == CLIENT_API_ERROR) {
       client_api_error_t err_msg;
       memset(&err_msg, 0, sizeof(err_msg));
-      client_api_error_decode(response, &err_msg);
-      fprintf(stderr, "%s: %s\n", L10N_ERROR, err_msg.message);
-      client_api_error_destroy(&err_msg);
+      if (client_api_error_decode(response, &err_msg) == 0) {
+        fprintf(stderr, "%s: %s\n", L10N_ERROR, err_msg.message);
+        client_api_error_destroy(&err_msg);
+      }
     }
     cbor_decref(&response);
     return 1;
