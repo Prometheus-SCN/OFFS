@@ -52,23 +52,23 @@ static int _recv_all(int fd, uint8_t* data, size_t len) {
   return 0;
 }
 
-offs_client_t* offs_client_create(const char* socket_path) {
-  offs_client_t* client = get_clear_memory(sizeof(offs_client_t));
+cli_client_t* cli_client_create(const char* socket_path) {
+  cli_client_t* client = get_clear_memory(sizeof(cli_client_t));
   client->sock_fd = -1;
   client->socket_path = socket_path;
   client->connected = 0;
   return client;
 }
 
-void offs_client_destroy(offs_client_t* client) {
+void cli_client_destroy(cli_client_t* client) {
   if (client == NULL) {
     return;
   }
-  offs_client_disconnect(client);
+  cli_client_disconnect(client);
   free(client);
 }
 
-int offs_client_connect(offs_client_t* client) {
+int cli_client_connect(cli_client_t* client) {
   if (client == NULL || client->socket_path == NULL) {
     return -1;
   }
@@ -96,7 +96,7 @@ int offs_client_connect(offs_client_t* client) {
   return 0;
 }
 
-void offs_client_disconnect(offs_client_t* client) {
+void cli_client_disconnect(cli_client_t* client) {
   if (client == NULL) {
     return;
   }
@@ -107,7 +107,7 @@ void offs_client_disconnect(offs_client_t* client) {
   client->connected = 0;
 }
 
-cbor_item_t* offs_client_send(offs_client_t* client, cbor_item_t* request) {
+cbor_item_t* cli_client_send(cli_client_t* client, cbor_item_t* request) {
   if (client == NULL || !client->connected || request == NULL) {
     return NULL;
   }

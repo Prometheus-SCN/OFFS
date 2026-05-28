@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-int cmd_friend(int argc, char** argv, offs_client_t* client) {
+int cmd_friend(int argc, char** argv, cli_client_t* client) {
   if (argc < 1) {
     printf("Usage: offs friend <add|remove|list> ...\n");
     return 1;
@@ -31,7 +31,7 @@ int cmd_friend(int argc, char** argv, offs_client_t* client) {
     friend_req.data_size = strlen(argv[1]);
 
     cbor_item_t* request = client_api_friend_add_encode(&friend_req);
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
     if (response != NULL) cbor_decref(&response);
     printf("%s\n", L10N_OK);
@@ -50,7 +50,7 @@ int cmd_friend(int argc, char** argv, offs_client_t* client) {
     friend_req.node_id_len = strlen(argv[1]);
 
     cbor_item_t* request = client_api_friend_remove_encode(&friend_req);
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
     if (response != NULL) cbor_decref(&response);
     printf("%s\n", L10N_OK);
@@ -59,7 +59,7 @@ int cmd_friend(int argc, char** argv, offs_client_t* client) {
 
   if (strcmp(subcommand, "list") == 0) {
     cbor_item_t* request = client_api_friend_list_request_encode();
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {

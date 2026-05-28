@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-int cmd_block(int argc, char** argv, offs_client_t* client) {
+int cmd_block(int argc, char** argv, cli_client_t* client) {
   if (argc < 1) {
     printf("Usage: offs block <put|get|delete> ...\n");
     return 1;
@@ -39,7 +39,7 @@ int cmd_block(int argc, char** argv, offs_client_t* client) {
     blk_put.encoding = encoding;
 
     cbor_item_t* request = client_api_block_put_request_encode(&blk_put);
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {
@@ -69,7 +69,7 @@ int cmd_block(int argc, char** argv, offs_client_t* client) {
     blk_get.hash_len = strlen(argv[1]);
 
     cbor_item_t* request = client_api_block_get_request_encode(&blk_get);
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {
@@ -100,7 +100,7 @@ int cmd_block(int argc, char** argv, offs_client_t* client) {
     blk_del.hash_len = strlen(argv[1]);
 
     cbor_item_t* request = client_api_block_delete_request_encode(&blk_del);
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {

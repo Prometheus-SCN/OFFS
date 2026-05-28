@@ -11,11 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-int cmd_health(int argc, char** argv, offs_client_t* client) {
+int cmd_health(int argc, char** argv, cli_client_t* client) {
   (void)argc; (void)argv;
 
   cbor_item_t* request = client_api_health_request_encode();
-  cbor_item_t* response = offs_client_send(client, request);
+  cbor_item_t* response = cli_client_send(client, request);
   cbor_decref(&request);
 
   if (response == NULL) {

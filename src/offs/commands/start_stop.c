@@ -11,7 +11,7 @@
 #include <string.h>
 #include <unistd.h>
 
-int cmd_start(int argc, char** argv, offs_client_t* client) {
+int cmd_start(int argc, char** argv, cli_client_t* client) {
   (void)client;
   const char* config_path = NULL;
   int foreground = 0;
@@ -46,11 +46,11 @@ int cmd_start(int argc, char** argv, offs_client_t* client) {
   return 0;
 }
 
-int cmd_stop(int argc, char** argv, offs_client_t* client) {
+int cmd_stop(int argc, char** argv, cli_client_t* client) {
   (void)argc; (void)argv;
 
   cbor_item_t* request = client_api_shutdown_request_encode();
-  cbor_item_t* response = offs_client_send(client, request);
+  cbor_item_t* response = cli_client_send(client, request);
   cbor_decref(&request);
 
   if (response == NULL) {
@@ -63,7 +63,7 @@ int cmd_stop(int argc, char** argv, offs_client_t* client) {
   return 0;
 }
 
-int cmd_restart(int argc, char** argv, offs_client_t* client) {
+int cmd_restart(int argc, char** argv, cli_client_t* client) {
   int ret = cmd_stop(0, NULL, client);
   if (ret != 0) return ret;
   sleep(1); /* Give daemon time to release the socket */

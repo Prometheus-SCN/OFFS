@@ -16,22 +16,22 @@ static const char* g_lang = "en";
 typedef struct {
   const char* name;
   const char* description;
-  int (*handler)(int argc, char** argv, offs_client_t* client);
+  int (*handler)(int argc, char** argv, cli_client_t* client);
 } command_t;
 
 /* Forward declarations for command handlers (implemented in commands/) */
-int cmd_put(int argc, char** argv, offs_client_t* client);
-int cmd_get(int argc, char** argv, offs_client_t* client);
-int cmd_block(int argc, char** argv, offs_client_t* client);
-int cmd_peer(int argc, char** argv, offs_client_t* client);
-int cmd_config(int argc, char** argv, offs_client_t* client);
-int cmd_friend(int argc, char** argv, offs_client_t* client);
-int cmd_health(int argc, char** argv, offs_client_t* client);
-int cmd_status(int argc, char** argv, offs_client_t* client);
-int cmd_version(int argc, char** argv, offs_client_t* client);
-int cmd_start(int argc, char** argv, offs_client_t* client);
-int cmd_stop(int argc, char** argv, offs_client_t* client);
-int cmd_restart(int argc, char** argv, offs_client_t* client);
+int cmd_put(int argc, char** argv, cli_client_t* client);
+int cmd_get(int argc, char** argv, cli_client_t* client);
+int cmd_block(int argc, char** argv, cli_client_t* client);
+int cmd_peer(int argc, char** argv, cli_client_t* client);
+int cmd_config(int argc, char** argv, cli_client_t* client);
+int cmd_friend(int argc, char** argv, cli_client_t* client);
+int cmd_health(int argc, char** argv, cli_client_t* client);
+int cmd_status(int argc, char** argv, cli_client_t* client);
+int cmd_version(int argc, char** argv, cli_client_t* client);
+int cmd_start(int argc, char** argv, cli_client_t* client);
+int cmd_stop(int argc, char** argv, cli_client_t* client);
+int cmd_restart(int argc, char** argv, cli_client_t* client);
 
 static command_t g_commands[] = {
   {"start",   L10N_START_DESC,   cmd_start},
@@ -125,12 +125,12 @@ int main(int argc, char** argv) {
     needs_client = 0;
   }
 
-  offs_client_t* client = NULL;
+  cli_client_t* client = NULL;
   if (needs_client) {
-    client = offs_client_create(g_socket_path);
-    if (offs_client_connect(client) != 0) {
+    client = cli_client_create(g_socket_path);
+    if (cli_client_connect(client) != 0) {
       fprintf(stderr, "%s: %s\n", L10N_DAEMON_UNREACHABLE, g_socket_path);
-      offs_client_destroy(client);
+      cli_client_destroy(client);
       return 1;
     }
   }
@@ -144,12 +144,12 @@ int main(int argc, char** argv) {
       }
       int result = g_commands[i].handler(argc - arg_offset - 1,
                                           argv + arg_offset + 1, client);
-      if (client != NULL) offs_client_destroy(client);
+      if (client != NULL) cli_client_destroy(client);
       return result;
     }
   }
 
   fprintf(stderr, "%s '%s'\n", L10N_UNKNOWN_COMMAND, command_name);
-  if (client != NULL) offs_client_destroy(client);
+  if (client != NULL) cli_client_destroy(client);
   return 1;
 }

@@ -13,15 +13,15 @@ typedef struct {
   int sock_fd;
   const char* socket_path;
   uint8_t connected;
-} offs_client_t;
+} cli_client_t;
 
-offs_client_t* offs_client_create(const char* socket_path);
-void offs_client_destroy(offs_client_t* client);
-int offs_client_connect(offs_client_t* client);
-void offs_client_disconnect(offs_client_t* client);
+cli_client_t* cli_client_create(const char* socket_path);
+void cli_client_destroy(cli_client_t* client);
+int cli_client_connect(cli_client_t* client);
+void cli_client_disconnect(cli_client_t* client);
 
 /* Send a CBOR item and read back the response CBOR item.
    Returns the response item (caller must cbor_decref), or NULL on error. */
-cbor_item_t* offs_client_send(offs_client_t* client, cbor_item_t* request);
+cbor_item_t* cli_client_send(cli_client_t* client, cbor_item_t* request);
 
 #endif /* OFFS_CLIENT_H */

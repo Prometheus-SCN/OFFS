@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-int cmd_peer(int argc, char** argv, offs_client_t* client) {
+int cmd_peer(int argc, char** argv, cli_client_t* client) {
   if (argc < 1) {
     printf("Usage: offs peer <info|list|connect> ...\n");
     return 1;
@@ -20,7 +20,7 @@ int cmd_peer(int argc, char** argv, offs_client_t* client) {
 
   if (strcmp(subcommand, "info") == 0) {
     cbor_item_t* request = client_api_peer_info_request_encode();
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {
@@ -41,7 +41,7 @@ int cmd_peer(int argc, char** argv, offs_client_t* client) {
 
   if (strcmp(subcommand, "list") == 0) {
     cbor_item_t* request = client_api_peer_list_request_encode();
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {
@@ -75,7 +75,7 @@ int cmd_peer(int argc, char** argv, offs_client_t* client) {
     peer_con.data_size = strlen(argv[1]);
 
     cbor_item_t* request = client_api_peer_connect_encode(&peer_con);
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {

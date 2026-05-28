@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-int cmd_config(int argc, char** argv, offs_client_t* client) {
+int cmd_config(int argc, char** argv, cli_client_t* client) {
   if (argc < 1) {
     printf("Usage: offs config <show|get|set|add|remove|generate-auth|set-auth|reload> ...\n");
     return 1;
@@ -24,7 +24,7 @@ int cmd_config(int argc, char** argv, offs_client_t* client) {
     cfg_req.key = (char*)"*";
 
     cbor_item_t* request = client_api_config_get_request_encode(&cfg_req);
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {
@@ -54,7 +54,7 @@ int cmd_config(int argc, char** argv, offs_client_t* client) {
     cfg_req.key = (char*)argv[1];
 
     cbor_item_t* request = client_api_config_get_request_encode(&cfg_req);
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {
@@ -87,7 +87,7 @@ int cmd_config(int argc, char** argv, offs_client_t* client) {
     cfg_req.value_json = (char*)argv[2];
 
     cbor_item_t* request = client_api_config_set_request_encode(&cfg_req);
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {
@@ -107,7 +107,7 @@ int cmd_config(int argc, char** argv, offs_client_t* client) {
 
   if (strcmp(subcommand, "generate-auth") == 0) {
     cbor_item_t* request = client_api_config_generate_auth_request_encode();
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {
@@ -138,7 +138,7 @@ int cmd_config(int argc, char** argv, offs_client_t* client) {
     cfg_req.value_json = (char*)argv[1];
 
     cbor_item_t* request = client_api_config_set_request_encode(&cfg_req);
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
     if (response != NULL) cbor_decref(&response);
     printf("%s\n", L10N_OK);
@@ -147,7 +147,7 @@ int cmd_config(int argc, char** argv, offs_client_t* client) {
 
   if (strcmp(subcommand, "reload") == 0) {
     cbor_item_t* request = client_api_config_reload_request_encode();
-    cbor_item_t* response = offs_client_send(client, request);
+    cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
     if (response != NULL) {

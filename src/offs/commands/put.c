@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-int cmd_put(int argc, char** argv, offs_client_t* client) {
+int cmd_put(int argc, char** argv, cli_client_t* client) {
   if (argc < 1) {
     fprintf(stderr, "%s\n", L10N_PUT_USAGE);
     return 1;
@@ -58,7 +58,7 @@ int cmd_put(int argc, char** argv, offs_client_t* client) {
   }
 
   cbor_item_t* request = client_api_put_request_encode(&put_req);
-  cbor_item_t* response = offs_client_send(client, request);
+  cbor_item_t* response = cli_client_send(client, request);
   cbor_decref(&request);
   free(file_data);
 
