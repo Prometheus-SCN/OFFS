@@ -27,6 +27,7 @@ OFFS/
 │       │   ├── config.c    # Config management (get/set/add/remove/generate-auth/reload)
 │       │   ├── friend.c    # Friend list management
 │       │   ├── health.c    # Health/status
+│       │   ├── start_stop.c # Daemon lifecycle (start/stop/restart)
 │       │   └── status.c    # Daemon status
 │       ├── l10n/
 │       │   ├── en.h        # English strings
@@ -138,7 +139,10 @@ Communicates with `offsd` over Unix socket (named pipe on Windows) using the exi
 ### Commands
 
 ```
-offs put <file> [--temporary] [--recycler <url>]    Import a file
+offs start [--config <path>] [--foreground]         Start the daemon
+offs stop                                            Stop the running daemon
+offs restart [--config <path>]                       Stop + start
+offs put <file> [--temporary] [--recycler <url>]     Import a file
 offs get <ori> [--output <path>]                     Export a file
 offs block put <data> [--encoding base58|raw]        Store a raw block
 offs block get <hash>                                Retrieve a raw block
@@ -189,6 +193,7 @@ Each command is a separate `.c` file under `src/offs/commands/`. A dispatch tabl
    - `CLIENT_API_CONFIG_SET_REQUEST` / `RESPONSE` (operation: set/add/remove)
    - `CLIENT_API_CONFIG_RELOAD_REQUEST` / `RESPONSE`
    - `CLIENT_API_CONFIG_GENERATE_AUTH_REQUEST` / `RESPONSE`
+   - `CLIENT_API_SHUTDOWN_REQUEST` — triggers graceful daemon shutdown
 5. Config route handler updated with granular get/set/add/remove alongside existing reload
 
 ## Error Handling
