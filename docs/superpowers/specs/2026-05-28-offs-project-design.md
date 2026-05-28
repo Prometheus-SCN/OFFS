@@ -175,9 +175,18 @@ offs help [command]                                  Help (localized)
 4. Read CBOR response, decode, display formatted result
 5. Close socket
 
-### Multi-lingual help
+### Localization (l10n)
 
-Strings extern'd in `src/offs/l10n/` — one header per locale (`en.h`, `es.h`). Locale detected from `$LANG`/`$LC_ALL` on POSIX, `GetUserDefaultLocaleName()` on Windows. `offs help` and `--help` output in the detected language.
+Both help text and error messages are localized. Strings are extern'd in `src/offs/l10n/` — one header per locale (`en.h`, `es.h`, etc.). Each header defines the same set of string keys with translated values.
+
+Language selection (highest to lowest priority):
+
+1. `--lang <code>` flag on any command (e.g., `offs --lang es config show`)
+2. `$OFFS_LANG` environment variable
+3. `$LANG` / `$LC_ALL` on POSIX, `GetUserDefaultLocaleName()` on Windows
+4. Fallback to `en`
+
+The language can also be persisted via `offs config set lang es`, which writes the preference for future commands. The `--lang` flag always overrides the persisted value.
 
 ### Command dispatch
 
