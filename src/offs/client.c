@@ -97,7 +97,7 @@ int offs_client_connect(offs_client_t* client) {
 }
 
 void offs_client_disconnect(offs_client_t* client) {
-  if (client == NULL || !client->connected) {
+  if (client == NULL) {
     return;
   }
   if (client->sock_fd >= 0) {
