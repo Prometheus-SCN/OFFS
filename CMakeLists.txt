@@ -36,6 +36,8 @@ if(OFFS_CLI_SRC)
   add_executable(offs_cli ${OFFS_CLI_SRC})
   set_target_properties(offs_cli PROPERTIES OUTPUT_NAME offs)
   target_link_libraries(offs_cli PRIVATE offs)
+  target_link_libraries(offs_cli PRIVATE ${CMAKE_BINARY_DIR}/deps/libcbor/libcbor.a)
+  target_include_directories(offs_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/liboffs/src)
 endif()
 
 include(CTest)
