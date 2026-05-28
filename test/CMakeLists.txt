@@ -8,6 +8,8 @@ if(BUILD_TESTING)
   if(TEST_SOURCES)
     add_executable(testoffs test_main.cpp ${TEST_SOURCES}
       ${CMAKE_CURRENT_SOURCE_DIR}/../src/offs/client.c
+      ${CMAKE_CURRENT_SOURCE_DIR}/../src/offs/cli_util.c
+      ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_stubs.c
     )
     add_dependencies(testoffs offs)
     target_link_libraries(testoffs PRIVATE -Wl,--whole-archive offs -Wl,--no-whole-archive)
