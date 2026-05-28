@@ -30,6 +30,7 @@
 #include "Configuration/config.h"
 #include "Configuration/config_pending.h"
 #include "Platform/platform.h"
+#include "Util/allocator.h"
 #include <cJSON.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,8 +44,6 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#else
-#include <sys/sysinfo.h>
 #endif
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -126,12 +125,7 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
   long file_size = ftell(file);
   fseek(file, 0, SEEK_SET);
 
-  char* buffer = (char*)malloc((size_t)file_size + 1);
-  if (buffer == NULL) {
-    fprintf(stderr, "Failed to allocate memory for config file\n");
-    fclose(file);
-    return -1;
-  }
+  char* buffer = (char*)get_memory((size_t)file_size + 1);
 
   size_t bytes_read = fread(buffer, 1, (size_t)file_size, file);
   fclose(file);
@@ -152,10 +146,12 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
     cJSON* data_dir = cJSON_GetObjectItem(daemon, "data-dir");
     if (cJSON_IsString(data_dir) && args->data_dir == NULL) {
       args->data_dir = strdup(data_dir->valuestring);
+      if (args->data_dir == NULL) { cJSON_Delete(root); return -1; }
     }
     cJSON* pid_file = cJSON_GetObjectItem(daemon, "pid-file");
     if (cJSON_IsString(pid_file) && args->pid_file == NULL) {
       args->pid_file = strdup(pid_file->valuestring);
+      if (args->pid_file == NULL) { cJSON_Delete(root); return -1; }
     }
   }
 
@@ -165,6 +161,7 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
     cJSON* host = cJSON_GetObjectItem(network, "host");
     if (cJSON_IsString(host) && args->host == NULL) {
       args->host = strdup(host->valuestring);
+      if (args->host == NULL) { cJSON_Delete(root); return -1; }
     }
     cJSON* port = cJSON_GetObjectItem(network, "port");
     if (cJSON_IsNumber(port) && args->port == 23402) {
@@ -178,6 +175,7 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
     cJSON* socket_path = cJSON_GetObjectItem(unix_section, "socket-path");
     if (cJSON_IsString(socket_path) && args->unix_path == NULL) {
       args->unix_path = strdup(socket_path->valuestring);
+      if (args->unix_path == NULL) { cJSON_Delete(root); return -1; }
     }
   }
 
@@ -187,6 +185,7 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
     cJSON* cache_dir = cJSON_GetObjectItem(cache, "dir");
     if (cJSON_IsString(cache_dir) && args->cache_dir == NULL) {
       args->cache_dir = strdup(cache_dir->valuestring);
+      if (args->cache_dir == NULL) { cJSON_Delete(root); return -1; }
     }
   }
 
@@ -276,6 +275,18 @@ static void _remove_pid_file(const char* path) {
   if (path != NULL) {
     unlink(path);
   }
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Free args allocated by config file parsing
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+static void _free_args(offsd_args_t* args) {
+  if (args->data_dir != NULL)    free((void*)args->data_dir);
+  if (args->pid_file != NULL)    free((void*)args->pid_file);
+  if (args->host != NULL)        free((void*)args->host);
+  if (args->unix_path != NULL)   free((void*)args->unix_path);
+  if (args->cache_dir != NULL)    free((void*)args->cache_dir);
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -458,7 +469,6 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
   }
 
   /* Node object */
-  memset(&server->node, 0, sizeof(server->node));
   server->node.config = &server->config;
   server->node.authority = server->authority;
   server->node.network = server->network;
@@ -559,8 +569,9 @@ static void _shutdown(offsd_server_t* server, const char* pid_file) {
     unix_transport_stop(server->unix_transport);
   }
 
-  /* 2. Stop network connections */
+  /* 2. Save peers and stop network connections */
   if (server->network != NULL) {
+    authority_save_peers(server->authority, server->network);
     ATOMIC_STORE(&server->network->running, 0);
     network_shutdown_connections(server->network);
   }
@@ -627,7 +638,7 @@ int main(int argc, char** argv) {
     return parse_result > 0 ? 0 : 1;
   }
 
-  /* Print banner */
+  /* Print banner (before daemonization so it's visible) */
   printf("OFF System Daemon (offsd)\n");
   printf("  Host: %s\n", args.host);
   if (args.port == 0) {
@@ -685,5 +696,6 @@ int main(int argc, char** argv) {
   server.draining_val = 1;
   _shutdown(&server, args.pid_file);
 
+  _free_args(&args);
   return 0;
 }
