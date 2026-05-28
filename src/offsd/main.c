@@ -1,0 +1,689 @@
+//
+// offsd — OFF System daemon binary
+//
+// A productionized server built on liboffs that supports:
+// - Config file parsing (JSON via cJSON)
+// - Daemonization (double-fork unless --foreground)
+// - PID file
+// - Signal handlers for graceful shutdown (SIGINT/SIGTERM)
+// - Auto-detect worker count from CPU cores
+// - Cross-platform worker detection
+// - Clean shutdown sequence in reverse order
+
+#include "ClientAPI/HTTP/http_server.h"
+#include "ClientAPI/HTTP/off_routes.h"
+#include "ClientAPI/HTTP/block_routes.h"
+#include "ClientAPI/HTTP/cors.h"
+#include "ClientAPI/Unix/unix_transport.h"
+#include "ClientAPI/HTTP/health_routes.h"
+#include "ClientAPI/health_handler.h"
+#include "ClientAPI/HTTP/peer_routes.h"
+#include "ClientAPI/HTTP/config_routes.h"
+#include "Node/node.h"
+#include "Network/authority.h"
+#include "Network/network.h"
+#include "OFFStreams/tuple_cache.h"
+#include "BlockCache/block_cache.h"
+#include "OFFStreams/ofd_cache.h"
+#include "Scheduler/scheduler.h"
+#include "Timer/timer_actor.h"
+#include "Configuration/config.h"
+#include "Configuration/config_pending.h"
+#include "Platform/platform.h"
+#include <cJSON.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <signal.h>
+#include <time.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <errno.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/sysinfo.h>
+#endif
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Signal handling — store node pointer so the handler can set running=0
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+static offs_node_t* g_node = NULL;
+
+static void _signal_handler(int sig) {
+  (void)sig;
+  if (g_node != NULL) {
+    ATOMIC_STORE(&g_node->running, 0);
+  }
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * CLI argument structure — holds everything parsed from flags + config file
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+typedef struct {
+  const char* config_path;
+  const char* host;
+  uint16_t    port;
+  const char* unix_path;
+  const char* cache_dir;
+  const char* data_dir;
+  const char* pid_file;
+  int         worker_count;
+  int         foreground;
+} offsd_args_t;
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Usage text
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+static void _print_usage(const char* program) {
+  fprintf(stderr, "Usage: %s [options]\n", program);
+  fprintf(stderr, "Options:\n");
+  fprintf(stderr, "  --config <path>      Config file path (JSON)\n");
+  fprintf(stderr, "  --host <addr>        Bind address (default: 0.0.0.0)\n");
+  fprintf(stderr, "  --port <port>        HTTP port, 0 to disable (default: 23402)\n");
+  fprintf(stderr, "  --unix <path>        Unix socket path\n");
+  fprintf(stderr, "  --cache-dir <dir>    Block cache directory\n");
+  fprintf(stderr, "  --data-dir <dir>     Persistent data directory\n");
+  fprintf(stderr, "  --pid-file <path>    PID file path\n");
+  fprintf(stderr, "  --workers <n>        Worker count, 0=auto (default: 0)\n");
+  fprintf(stderr, "  --foreground         Run in foreground (do not daemonize)\n");
+  fprintf(stderr, "  --help               Show this help\n");
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Cross-platform worker count detection
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+static int _get_worker_count(void) {
+#ifdef _WIN32
+  SYSTEM_INFO sysinfo;
+  GetSystemInfo(&sysinfo);
+  return sysinfo.dwNumberOfProcessors > 0 ? (int)sysinfo.dwNumberOfProcessors : 1;
+#else
+  long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
+  if (nprocs < 1) return 1;
+  return (int)nprocs;
+#endif
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * JSON config file parsing
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+static int _parse_config_file(const char* path, offsd_args_t* args) {
+  FILE* file = fopen(path, "r");
+  if (file == NULL) {
+    fprintf(stderr, "Failed to open config file: %s\n", path);
+    return -1;
+  }
+
+  fseek(file, 0, SEEK_END);
+  long file_size = ftell(file);
+  fseek(file, 0, SEEK_SET);
+
+  char* buffer = (char*)malloc((size_t)file_size + 1);
+  if (buffer == NULL) {
+    fprintf(stderr, "Failed to allocate memory for config file\n");
+    fclose(file);
+    return -1;
+  }
+
+  size_t bytes_read = fread(buffer, 1, (size_t)file_size, file);
+  fclose(file);
+  buffer[bytes_read] = '\0';
+
+  cJSON* root = cJSON_Parse(buffer);
+  free(buffer);
+
+  if (root == NULL) {
+    fprintf(stderr, "Failed to parse config file: %s\n",
+            cJSON_GetErrorPtr() != NULL ? cJSON_GetErrorPtr() : "unknown error");
+    return -1;
+  }
+
+  /* [daemon] section */
+  cJSON* daemon = cJSON_GetObjectItem(root, "daemon");
+  if (daemon != NULL) {
+    cJSON* data_dir = cJSON_GetObjectItem(daemon, "data-dir");
+    if (cJSON_IsString(data_dir) && args->data_dir == NULL) {
+      args->data_dir = strdup(data_dir->valuestring);
+    }
+    cJSON* pid_file = cJSON_GetObjectItem(daemon, "pid-file");
+    if (cJSON_IsString(pid_file) && args->pid_file == NULL) {
+      args->pid_file = strdup(pid_file->valuestring);
+    }
+  }
+
+  /* [network] section */
+  cJSON* network = cJSON_GetObjectItem(root, "network");
+  if (network != NULL) {
+    cJSON* host = cJSON_GetObjectItem(network, "host");
+    if (cJSON_IsString(host) && args->host == NULL) {
+      args->host = strdup(host->valuestring);
+    }
+    cJSON* port = cJSON_GetObjectItem(network, "port");
+    if (cJSON_IsNumber(port) && args->port == 23402) {
+      args->port = (uint16_t)port->valueint;
+    }
+  }
+
+  /* [unix] section */
+  cJSON* unix_section = cJSON_GetObjectItem(root, "unix");
+  if (unix_section != NULL) {
+    cJSON* socket_path = cJSON_GetObjectItem(unix_section, "socket-path");
+    if (cJSON_IsString(socket_path) && args->unix_path == NULL) {
+      args->unix_path = strdup(socket_path->valuestring);
+    }
+  }
+
+  /* [cache] section */
+  cJSON* cache = cJSON_GetObjectItem(root, "cache");
+  if (cache != NULL) {
+    cJSON* cache_dir = cJSON_GetObjectItem(cache, "dir");
+    if (cJSON_IsString(cache_dir) && args->cache_dir == NULL) {
+      args->cache_dir = strdup(cache_dir->valuestring);
+    }
+  }
+
+  /* [workers] section */
+  cJSON* workers = cJSON_GetObjectItem(root, "workers");
+  if (workers != NULL) {
+    cJSON* count = cJSON_GetObjectItem(workers, "count");
+    if (cJSON_IsNumber(count) && args->worker_count == 0) {
+      args->worker_count = count->valueint;
+    }
+  }
+
+  cJSON_Delete(root);
+  return 0;
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * CLI argument parsing
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+static int _parse_args(int argc, char** argv, offsd_args_t* args) {
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+      args->config_path = argv[++i];
+    } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
+      args->host = argv[++i];
+    } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
+      args->port = (uint16_t)atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
+      args->unix_path = argv[++i];
+    } else if (strcmp(argv[i], "--cache-dir") == 0 && i + 1 < argc) {
+      args->cache_dir = argv[++i];
+    } else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc) {
+      args->data_dir = argv[++i];
+    } else if (strcmp(argv[i], "--pid-file") == 0 && i + 1 < argc) {
+      args->pid_file = argv[++i];
+    } else if (strcmp(argv[i], "--workers") == 0 && i + 1 < argc) {
+      args->worker_count = atoi(argv[++i]);
+      if (args->worker_count < 0) args->worker_count = 0;
+    } else if (strcmp(argv[i], "--foreground") == 0) {
+      args->foreground = 1;
+    } else if (strcmp(argv[i], "--help") == 0) {
+      _print_usage(argv[0]);
+      return 1;
+    } else {
+      fprintf(stderr, "Unknown option: %s\n", argv[i]);
+      _print_usage(argv[0]);
+      return -1;
+    }
+  }
+
+  if (args->config_path != NULL) {
+    if (_parse_config_file(args->config_path, args) != 0) {
+      return -1;
+    }
+  }
+
+  if (args->worker_count == 0) {
+    args->worker_count = _get_worker_count();
+  }
+  if (args->worker_count < 1) {
+    args->worker_count = 1;
+  }
+
+  return 0;
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * PID file management
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+static int _write_pid_file(const char* path) {
+  if (path == NULL) return 0;
+
+  FILE* file = fopen(path, "w");
+  if (file == NULL) {
+    fprintf(stderr, "Failed to open PID file %s: %s\n", path, strerror(errno));
+    return -1;
+  }
+
+  fprintf(file, "%d\n", getpid());
+  fclose(file);
+  return 0;
+}
+
+static void _remove_pid_file(const char* path) {
+  if (path != NULL) {
+    unlink(path);
+  }
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Daemonization (double-fork)
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+static int _daemonize(void) {
+  pid_t pid = fork();
+  if (pid < 0) {
+    fprintf(stderr, "First fork failed: %s\n", strerror(errno));
+    return -1;
+  }
+  if (pid > 0) {
+    _exit(0);
+  }
+
+  if (setsid() < 0) {
+    fprintf(stderr, "setsid failed: %s\n", strerror(errno));
+    return -1;
+  }
+
+  pid = fork();
+  if (pid < 0) {
+    fprintf(stderr, "Second fork failed: %s\n", strerror(errno));
+    return -1;
+  }
+  if (pid > 0) {
+    _exit(0);
+  }
+
+  umask(0);
+
+  if (chdir("/") < 0) {
+    fprintf(stderr, "chdir(/) failed: %s\n", strerror(errno));
+    return -1;
+  }
+
+  int dev_null = open("/dev/null", O_RDWR);
+  if (dev_null < 0) {
+    fprintf(stderr, "Failed to open /dev/null: %s\n", strerror(errno));
+    return -1;
+  }
+  dup2(dev_null, STDIN_FILENO);
+  dup2(dev_null, STDOUT_FILENO);
+  dup2(dev_null, STDERR_FILENO);
+  if (dev_null > STDERR_FILENO) {
+    close(dev_null);
+  }
+
+  return 0;
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Startup: create all components
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+typedef struct {
+  scheduler_pool_t* pool;
+  timer_actor_t*    timer;
+  config_t          config;
+  block_cache_t*    block_cache;
+  ofd_cache_t*      ofd_cache;
+  tuple_cache_t*    tuple_cache;
+  http_server_t*    http_server;
+  authority_t*      authority;
+  network_t*        network;
+  offs_node_t       node;
+  health_context_t  health_ctx;
+  uint8_t           running_val;
+  uint8_t           draining_val;
+  uint64_t          start_time_ms;
+  unix_transport_t* unix_transport;
+} offsd_server_t;
+
+static void _init_health_context(offsd_server_t* server, block_cache_t* bc) {
+  memset(&server->health_ctx, 0, sizeof(server->health_ctx));
+  server->health_ctx.block_cache = bc;
+  server->health_ctx.start_time_ms = &server->start_time_ms;
+  server->health_ctx.running = &server->running_val;
+  server->health_ctx.draining = &server->draining_val;
+}
+
+static int _startup(offsd_server_t* server, const offsd_args_t* args) {
+  memset(server, 0, sizeof(*server));
+
+  /* Thread setup */
+  platform_thread_setup_stack();
+
+  /* Scheduler pool */
+  server->pool = scheduler_pool_create(args->worker_count);
+  if (server->pool == NULL) {
+    fprintf(stderr, "Failed to create scheduler pool\n");
+    return -1;
+  }
+  scheduler_pool_start(server->pool);
+
+  /* Timer actor */
+  server->timer = timer_actor_create();
+
+  /* Configuration */
+  server->config = config_default();
+
+  /* Block cache */
+  server->block_cache = block_cache_create(server->config,
+      (char*)args->cache_dir, standard, server->timer,
+      server->pool, NULL, 0);
+  if (server->block_cache == NULL) {
+    fprintf(stderr, "Failed to create block cache\n");
+    timer_actor_destroy(server->timer);
+    scheduler_pool_stop(server->pool);
+    scheduler_pool_destroy(server->pool);
+    return -1;
+  }
+
+  /* OFD cache */
+  server->ofd_cache = ofd_cache_create(server->pool, server->block_cache, 300000);
+
+  /* Tuple cache */
+  server->tuple_cache = tuple_cache_create(100, server->pool);
+
+  /* HTTP server (skip if port is 0) */
+  if (args->port != 0) {
+    server->http_server = http_server_create(server->pool, args->host, args->port);
+    if (server->http_server == NULL) {
+      fprintf(stderr, "Failed to create HTTP server on %s:%u\n",
+              args->host, args->port);
+      tuple_cache_destroy(server->tuple_cache);
+      ofd_cache_destroy(server->ofd_cache);
+      block_cache_destroy(server->block_cache);
+      timer_actor_destroy(server->timer);
+      scheduler_pool_stop(server->pool);
+      scheduler_pool_destroy(server->pool);
+      return -1;
+    }
+  }
+
+  /* Start time tracking */
+  {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    server->start_time_ms = (uint64_t)now.tv_sec * 1000
+                          + (uint64_t)now.tv_nsec / 1000000;
+  }
+  server->running_val = 1;
+  server->draining_val = 0;
+
+  /* Health context */
+  _init_health_context(server, server->block_cache);
+
+  /* Authority */
+  server->authority = authority_create(&server->config);
+  if (server->authority == NULL) {
+    fprintf(stderr, "Failed to create authority\n");
+    if (server->http_server != NULL) http_server_destroy(server->http_server);
+    tuple_cache_destroy(server->tuple_cache);
+    ofd_cache_destroy(server->ofd_cache);
+    block_cache_destroy(server->block_cache);
+    timer_actor_destroy(server->timer);
+    scheduler_pool_stop(server->pool);
+    scheduler_pool_destroy(server->pool);
+    return -1;
+  }
+  authority_init_local_id(server->authority);
+
+  /* Network */
+  server->network = network_create(server->authority, server->block_cache,
+                                    server->timer, server->pool,
+                                    &server->config);
+  if (server->network == NULL) {
+    fprintf(stderr, "Failed to create network\n");
+    authority_destroy(server->authority);
+    if (server->http_server != NULL) http_server_destroy(server->http_server);
+    tuple_cache_destroy(server->tuple_cache);
+    ofd_cache_destroy(server->ofd_cache);
+    block_cache_destroy(server->block_cache);
+    timer_actor_destroy(server->timer);
+    scheduler_pool_stop(server->pool);
+    scheduler_pool_destroy(server->pool);
+    return -1;
+  }
+
+  /* Node object */
+  memset(&server->node, 0, sizeof(server->node));
+  server->node.config = &server->config;
+  server->node.authority = server->authority;
+  server->node.network = server->network;
+  server->node.block_cache = server->block_cache;
+  server->node.http_server = server->http_server;
+  server->node.scheduler = server->pool;
+  server->node.timer = server->timer;
+  ATOMIC_STORE(&server->node.running, 1);
+  ATOMIC_STORE(&server->node.draining, 0);
+  server->node.start_time_ms = server->start_time_ms;
+
+  /* Route registration (HTTP only if enabled) */
+  if (server->http_server != NULL) {
+    off_routes_register(server->http_server, server->pool,
+                        server->block_cache, server->ofd_cache,
+                        server->tuple_cache, NULL, NULL);
+    block_routes_register(server->http_server, server->pool,
+                          server->block_cache, NULL, NULL);
+    health_routes_register(server->http_server, &server->health_ctx);
+    peer_routes_register(server->http_server, &server->node,
+                         &server->config, NULL);
+    config_routes_register(server->http_server, &server->node,
+                           &server->config, args->data_dir);
+  }
+
+  /* Unix transport */
+  server->unix_transport = NULL;
+  if (args->unix_path != NULL) {
+    server->unix_transport = unix_transport_create(
+        server->pool, server->block_cache, server->ofd_cache,
+        server->tuple_cache, args->unix_path, NULL,
+        &server->health_ctx, &server->node, args->data_dir);
+    if (server->unix_transport == NULL) {
+      fprintf(stderr, "Failed to create Unix transport on %s\n",
+              args->unix_path);
+      authority_save_peers(server->authority, server->network);
+      network_destroy(server->network);
+      authority_destroy(server->authority);
+      if (server->http_server != NULL) http_server_destroy(server->http_server);
+      tuple_cache_destroy(server->tuple_cache);
+      ofd_cache_destroy(server->ofd_cache);
+      block_cache_destroy(server->block_cache);
+      timer_actor_destroy(server->timer);
+      scheduler_pool_stop(server->pool);
+      scheduler_pool_destroy(server->pool);
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Apply pending config (if any)
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+static void _apply_pending_config(offsd_server_t* server, const char* data_dir) {
+  if (data_dir == NULL) return;
+  if (config_pending_exists(data_dir) == 1) {
+    offs_node_restart(&server->node, data_dir);
+  }
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Start listening
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+static void _start_listening(offsd_server_t* server,
+                             const char* host, uint16_t port,
+                             const char* unix_path) {
+  if (server->http_server != NULL) {
+    http_server_listen(server->http_server);
+  }
+
+  if (server->unix_transport != NULL) {
+    unix_transport_start(server->unix_transport);
+    printf("Listening on unix://%s\n", unix_path);
+  }
+
+  authority_load_peers(server->authority, server->network);
+  network_start_connections(server->network);
+
+  if (server->http_server != NULL) {
+    printf("Listening on http://%s:%u\n", host, port);
+  }
+  printf("Press Ctrl+C to stop\n");
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Graceful shutdown — reverse order
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+static void _shutdown(offsd_server_t* server, const char* pid_file) {
+  printf("Shutting down...\n");
+
+  /* 1. Stop Unix transport */
+  if (server->unix_transport != NULL) {
+    unix_transport_stop(server->unix_transport);
+  }
+
+  /* 2. Stop network connections */
+  if (server->network != NULL) {
+    ATOMIC_STORE(&server->network->running, 0);
+    network_shutdown_connections(server->network);
+  }
+
+  /* 3. Stop HTTP server, then scheduler pool */
+  if (server->http_server != NULL) {
+    http_server_stop(server->http_server);
+  }
+  scheduler_pool_stop(server->pool);
+
+  /* 4. Destroy in reverse order */
+  if (server->unix_transport != NULL) {
+    unix_transport_destroy(server->unix_transport);
+  }
+  if (server->http_server != NULL) {
+    http_server_destroy(server->http_server);
+  }
+  if (server->network != NULL) {
+    network_destroy(server->network);
+  }
+  if (server->tuple_cache != NULL) {
+    tuple_cache_destroy(server->tuple_cache);
+  }
+  if (server->ofd_cache != NULL) {
+    ofd_cache_destroy(server->ofd_cache);
+  }
+  if (server->block_cache != NULL) {
+    block_cache_destroy(server->block_cache);
+  }
+  if (server->timer != NULL) {
+    timer_actor_destroy(server->timer);
+  }
+  if (server->pool != NULL) {
+    scheduler_pool_destroy(server->pool);
+  }
+  if (server->authority != NULL) {
+    authority_destroy(server->authority);
+  }
+
+  /* Unlink PID file */
+  _remove_pid_file(pid_file);
+
+  printf("Server stopped\n");
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * main
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+int main(int argc, char** argv) {
+  /* Default arguments */
+  offsd_args_t args;
+  memset(&args, 0, sizeof(args));
+  args.host = "0.0.0.0";
+  args.port = 23402;
+  args.cache_dir = "./offs_cache";
+  args.data_dir = ".";
+  args.worker_count = 0;
+  args.foreground = 0;
+
+  /* Parse CLI flags and config file */
+  int parse_result = _parse_args(argc, argv, &args);
+  if (parse_result != 0) {
+    return parse_result > 0 ? 0 : 1;
+  }
+
+  /* Print banner */
+  printf("OFF System Daemon (offsd)\n");
+  printf("  Host: %s\n", args.host);
+  if (args.port == 0) {
+    printf("  HTTP: disabled\n");
+  } else {
+    printf("  Port: %u\n", args.port);
+  }
+  printf("  Cache: %s\n", args.cache_dir);
+  printf("  Data: %s\n", args.data_dir);
+  printf("  Workers: %d\n", args.worker_count);
+  if (args.unix_path != NULL) {
+    printf("  Unix: %s\n", args.unix_path);
+  }
+  if (args.pid_file != NULL) {
+    printf("  PID file: %s\n", args.pid_file);
+  }
+
+  /* Daemonize unless --foreground */
+  if (!args.foreground) {
+    if (_daemonize() != 0) {
+      return 1;
+    }
+  }
+
+  /* Write PID file */
+  if (_write_pid_file(args.pid_file) != 0) {
+    return 1;
+  }
+
+  /* Startup */
+  offsd_server_t server;
+  if (_startup(&server, &args) != 0) {
+    _remove_pid_file(args.pid_file);
+    return 1;
+  }
+
+  /* Register signal handlers — must be after node_obj is populated */
+  g_node = &server.node;
+  signal(SIGINT, _signal_handler);
+  signal(SIGTERM, _signal_handler);
+
+  /* Apply any pending config from a previous shutdown */
+  _apply_pending_config(&server, args.data_dir);
+
+  /* Start listening */
+  _start_listening(&server, args.host, args.port, args.unix_path);
+
+  /* Main loop — wait until signal sets running=0 */
+  while (ATOMIC_LOAD(&server.node.running)) {
+    pause();
+  }
+
+  /* Graceful shutdown */
+  server.running_val = 0;
+  server.draining_val = 1;
+  _shutdown(&server, args.pid_file);
+
+  return 0;
+}
