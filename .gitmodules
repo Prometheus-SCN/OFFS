@@ -1,0 +1,6 @@
+[submodule "deps/liboffs"]
+	path = deps/liboffs
+	url = https://github.com/Prometheus-SCN/liboffs.git
+[submodule "deps/poll-dancer"]
+	path = deps/poll-dancer
+	url = https://github.com/vijayee/poll-dancer.git
