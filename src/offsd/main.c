@@ -30,6 +30,9 @@
 #include "Configuration/config.h"
 #include "Configuration/config_pending.h"
 #include "Platform/platform.h"
+#include "Update/update_actor.h"
+#include "Update/update_check.h"
+#include "Version/version.h"
 #include "Util/allocator.h"
 #include <cJSON.h>
 #include <stdio.h>
@@ -51,9 +54,13 @@
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
 static offs_node_t* g_node = NULL;
+static update_actor_t* g_update_actor = NULL;
 
 static void _signal_handler(int sig) {
-  (void)sig;
+  if (sig == SIGHUP && g_update_actor != NULL) {
+    update_actor_check_now(g_update_actor);
+    return;
+  }
   if (g_node != NULL) {
     ATOMIC_STORE(&g_node->running, 0);
   }
@@ -359,6 +366,7 @@ typedef struct {
   uint8_t           draining_val;
   uint64_t          start_time_ms;
   unix_transport_t* unix_transport;
+  update_actor_t*    update_actor;
 } offsd_server_t;
 
 static void _init_health_context(offsd_server_t* server, block_cache_t* bc) {
@@ -500,7 +508,7 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
     server->unix_transport = unix_transport_create(
         server->pool, server->block_cache, server->ofd_cache,
         server->tuple_cache, args->unix_path, NULL,
-        &server->health_ctx, &server->node, args->data_dir);
+        &server->health_ctx);
     if (server->unix_transport == NULL) {
       fprintf(stderr, "Failed to create Unix transport on %s\n",
               args->unix_path);
@@ -516,6 +524,30 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
       scheduler_pool_destroy(server->pool);
       return -1;
     }
+  }
+
+  /* Update actor — auto-update checks */
+  {
+    update_check_config_t update_config;
+    memset(&update_config, 0, sizeof(update_config));
+    snprintf(update_config.github_repo, sizeof(update_config.github_repo),
+             "%s", "Prometheus-SCN/OFFS");
+    snprintf(update_config.github_api_url, sizeof(update_config.github_api_url),
+             "%s", "https://api.github.com");
+    update_config.channel = channel_stable;
+
+    // Read GITHUB_TOKEN from environment
+    const char* token = getenv("GITHUB_TOKEN");
+    if (token != NULL) {
+      snprintf(update_config.github_token, sizeof(update_config.github_token),
+               "%s", token);
+    }
+
+    server->update_actor = update_actor_create(
+      server->pool, server->timer, &update_config,
+      "/var/lib/offs/updates", "/usr/bin", "/var/lib/offs/backup",
+      &server->draining_val, NULL);
+    g_update_actor = server->update_actor;
   }
 
   return 0;
@@ -601,6 +633,10 @@ static void _shutdown(offsd_server_t* server, const char* pid_file) {
   if (server->block_cache != NULL) {
     block_cache_destroy(server->block_cache);
   }
+  if (server->update_actor != NULL) {
+    update_actor_destroy(server->update_actor);
+    g_update_actor = NULL;
+  }
   if (server->timer != NULL) {
     timer_actor_destroy(server->timer);
   }
@@ -679,6 +715,7 @@ int main(int argc, char** argv) {
   g_node = &server.node;
   signal(SIGINT, _signal_handler);
   signal(SIGTERM, _signal_handler);
+  signal(SIGHUP, _signal_handler);
 
   /* Apply any pending config from a previous shutdown */
   _apply_pending_config(&server, args.data_dir);
