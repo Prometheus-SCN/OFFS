@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+launchctl bootout system/com.offs.daemon 2>/dev/null || \
+  launchctl unload /Library/LaunchDaemons/com.offs.daemon.plist 2>/dev/null || true
