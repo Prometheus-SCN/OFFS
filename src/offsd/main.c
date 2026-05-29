@@ -33,6 +33,7 @@
 #include "Update/update_actor.h"
 #include "Update/update_check.h"
 #include "Version/version.h"
+#include "ClientAPI/update_status_handler.h"
 #include "Util/allocator.h"
 #include <cJSON.h>
 #include <stdio.h>
@@ -367,6 +368,8 @@ typedef struct {
   uint64_t          start_time_ms;
   unix_transport_t* unix_transport;
   update_actor_t*    update_actor;
+  ATOMIC(uint32_t)  open_stream_count;
+  update_status_context_t update_status_ctx;
 } offsd_server_t;
 
 static void _init_health_context(offsd_server_t* server, block_cache_t* bc) {
@@ -492,7 +495,8 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
   if (server->http_server != NULL) {
     off_routes_register(server->http_server, server->pool,
                         server->block_cache, server->ofd_cache,
-                        server->tuple_cache, NULL, NULL);
+                        server->tuple_cache, NULL, NULL,
+                        &server->open_stream_count);
     block_routes_register(server->http_server, server->pool,
                           server->block_cache, NULL, NULL);
     health_routes_register(server->http_server, &server->health_ctx);
@@ -535,6 +539,7 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
     snprintf(update_config.github_api_url, sizeof(update_config.github_api_url),
              "%s", "https://api.github.com");
     update_config.channel = channel_stable;
+    update_config.check_interval_hours = 6;
 
     // Read GITHUB_TOKEN from environment
     const char* token = getenv("GITHUB_TOKEN");
@@ -543,11 +548,24 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
                "%s", token);
     }
 
+    /* Populate status context values not managed by the actor */
+    server->update_status_ctx.enabled = 1;
+    snprintf(server->update_status_ctx.channel,
+             sizeof(server->update_status_ctx.channel), "%s",
+             channel_to_string(update_config.channel));
+    server->update_status_ctx.check_interval_hours = update_config.check_interval_hours;
+
     server->update_actor = update_actor_create(
       server->pool, server->timer, &update_config,
       "/var/lib/offs/updates", "/usr/bin", "/var/lib/offs/backup",
-      &server->draining_val, NULL);
+      &server->draining_val, &server->open_stream_count,
+      &server->update_status_ctx);
     g_update_actor = server->update_actor;
+
+    if (server->unix_transport != NULL) {
+      unix_transport_set_update_status_ctx(server->unix_transport,
+                                            &server->update_status_ctx);
+    }
   }
 
   return 0;
