@@ -2,6 +2,7 @@
 // Created by victor on 5/28/25.
 //
 
+#include "Service/service.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +17,8 @@
 #define SLEEP_MS(ms) usleep((ms) * 1000)
 #endif
 
-#define STARTUP_TIMEOUT_SEC 30
+#define STARTUP_TIMEOUT_MS 30000
+#define SHUTDOWN_TIMEOUT_MS 30000
 #define PID_FILE "/var/run/offs-updater.pid"
 
 static FILE* g_log = NULL;
@@ -61,70 +63,6 @@ static int _copy_file(const char* src, const char* dst) {
   }
 #endif
   return 0;
-}
-
-static int _service_stop(void) {
-  _log_write("Stopping daemon service");
-#ifdef _WIN32
-  return system("sc stop offs-daemon > nul 2>&1");
-#elif __APPLE__
-  return system("launchctl bootout system "
-                "/Library/LaunchDaemons/com.offs.daemon.plist 2>/dev/null");
-#else
-  return system("systemctl stop offs-daemon 2>/dev/null");
-#endif
-}
-
-static int _service_start(void) {
-  _log_write("Starting daemon service");
-#ifdef _WIN32
-  return system("sc start offs-daemon > nul 2>&1");
-#elif __APPLE__
-  return system("launchctl bootstrap system "
-                "/Library/LaunchDaemons/com.offs.daemon.plist 2>/dev/null");
-#else
-  return system("systemctl daemon-reload 2>/dev/null && systemctl start offs-daemon 2>/dev/null");
-#endif
-}
-
-static int _wait_for_daemon_stop(void) {
-  _log_write("Waiting for daemon to exit");
-  for (int i = 0; i < 100; i++) {
-    SLEEP_MS(300);
-#ifdef _WIN32
-    int running = system("sc query offs-daemon 2>nul | findstr /C:\"RUNNING\" > nul");
-#elif __APPLE__
-    int running = system("launchctl list com.offs.daemon > /dev/null 2>&1");
-#else
-    int running = system("systemctl is-active --quiet offs-daemon");
-#endif
-    if (running != 0) {
-      _log_write("Daemon stopped");
-      return 0;
-    }
-  }
-  _log_write("Timeout waiting for daemon to stop");
-  return -1;
-}
-
-static int _wait_for_daemon_start(void) {
-  _log_write("Waiting for daemon to start");
-  for (int i = 0; i < STARTUP_TIMEOUT_SEC * 2; i++) {
-    SLEEP_MS(500);
-#ifdef _WIN32
-    int running = system("sc query offs-daemon 2>nul | findstr /C:\"RUNNING\" > nul");
-#elif __APPLE__
-    int running = system("launchctl list com.offs.daemon > /dev/null 2>&1");
-#else
-    int running = system("systemctl is-active --quiet offs-daemon");
-#endif
-    if (running == 0) {
-      _log_write("Daemon started successfully");
-      return 0;
-    }
-  }
-  _log_write("ERROR: Daemon failed to start within timeout");
-  return -1;
 }
 
 static int _restore_backup(const char* backup_dir, const char* install_dir) {
@@ -179,6 +117,8 @@ int main(int argc, char** argv) {
     fclose(pidf);
   }
 
+  const service_ops_t* svc = service_get_ops();
+
   _log_open();
   _log_write(mode == FINISH_SELF_REPLACE ? "Updater starting (finish mode)" : "Updater starting");
 
@@ -195,8 +135,13 @@ int main(int argc, char** argv) {
       _copy_file(src, dst);
     }
   } else {
-    _service_stop();
-    _wait_for_daemon_stop();
+    _log_write("Stopping daemon service");
+    svc->stop();
+    if (svc->wait_for_stop(SHUTDOWN_TIMEOUT_MS) != service_result_ok) {
+      _log_write("Timeout waiting for daemon to stop");
+      return 1;
+    }
+    _log_write("Daemon stopped");
 
     const char* files[] = {"offs-daemon", "offs-cli", NULL};
     char src[1024], dst[1024];
@@ -219,15 +164,23 @@ int main(int argc, char** argv) {
     _log_write("ERROR: exec of temp updater failed, attempting direct service restart");
   }
 
-  _service_start();
+  _log_write("Starting daemon service");
+  svc->start();
+  if (svc->wait_for_start(STARTUP_TIMEOUT_MS) != service_result_ok) {
+    _log_write("ERROR: Daemon failed to start within timeout");
+  } else {
+    _log_write("Daemon started successfully");
+  }
 
-  int daemon_ok = _wait_for_daemon_start();
+  int daemon_ok = svc->is_running();
 
-  if (daemon_ok != 0) {
-    _service_stop();
+  if (!daemon_ok) {
+    _log_write("Rolling back");
+    svc->stop();
+    svc->wait_for_stop(SHUTDOWN_TIMEOUT_MS);
     _restore_backup(backup_dir, install_dir);
-    _service_start();
-    _wait_for_daemon_start();
+    svc->start();
+    svc->wait_for_start(STARTUP_TIMEOUT_MS);
     _log_write("Rollback complete");
   } else {
     _log_write("Update complete");
@@ -235,5 +188,5 @@ int main(int argc, char** argv) {
 
   unlink(PID_FILE);
   _log_close();
-  return daemon_ok == 0 ? 0 : 1;
+  return daemon_ok ? 0 : 1;
 }

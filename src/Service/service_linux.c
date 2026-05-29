@@ -4,17 +4,18 @@
 
 #include "service.h"
 #include <stdlib.h>
-#include <string.h>
+#include <unistd.h>
 
 #if !defined(_WIN32) && !defined(__APPLE__)
 
 static int service_linux_stop(void) {
-  int result = system("systemctl stop offs-daemon");
+  int result = system("systemctl stop offs-daemon 2>/dev/null");
   return (result == 0) ? service_result_ok : service_result_error;
 }
 
 static int service_linux_start(void) {
-  int result = system("systemctl start offs-daemon");
+  int result = system("systemctl daemon-reload 2>/dev/null "
+                      "&& systemctl start offs-daemon 2>/dev/null");
   return (result == 0) ? service_result_ok : service_result_error;
 }
 
@@ -30,10 +31,36 @@ static int service_linux_install(const char* install_dir) {
 }
 
 static int service_linux_uninstall(void) {
-  system("systemctl stop offs-daemon");
-  system("systemctl disable offs-daemon");
+  system("systemctl stop offs-daemon 2>/dev/null");
+  system("systemctl disable offs-daemon 2>/dev/null");
   int result = system("systemctl daemon-reload");
   return (result == 0) ? service_result_ok : service_result_error;
+}
+
+static int service_linux_wait_for_stop(int timeout_ms) {
+  int interval_ms = 300;
+  int iterations = timeout_ms / interval_ms;
+  for (int i = 0; i < iterations; i++) {
+    usleep(interval_ms * 1000);
+    int running = system("systemctl is-active --quiet offs-daemon");
+    if (running != 0) {
+      return service_result_ok;
+    }
+  }
+  return service_result_timeout;
+}
+
+static int service_linux_wait_for_start(int timeout_ms) {
+  int interval_ms = 500;
+  int iterations = timeout_ms / interval_ms;
+  for (int i = 0; i < iterations; i++) {
+    usleep(interval_ms * 1000);
+    int running = system("systemctl is-active --quiet offs-daemon");
+    if (running == 0) {
+      return service_result_ok;
+    }
+  }
+  return service_result_timeout;
 }
 
 static service_ops_t linux_service_ops = {
@@ -42,6 +69,8 @@ static service_ops_t linux_service_ops = {
   service_linux_is_running,
   service_linux_install,
   service_linux_uninstall,
+  service_linux_wait_for_stop,
+  service_linux_wait_for_start,
   "offs-daemon"
 };
 

@@ -18,6 +18,8 @@ typedef struct {
   int (*is_running)(void);
   int (*install)(const char* install_dir);
   int (*uninstall)(void);
+  int (*wait_for_stop)(int timeout_ms);
+  int (*wait_for_start)(int timeout_ms);
   const char* name;
 } service_ops_t;
 

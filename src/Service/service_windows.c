@@ -120,12 +120,82 @@ static int service_windows_uninstall(void) {
   return service_result_ok;
 }
 
+static int service_windows_wait_for_stop(int timeout_ms) {
+  SC_HANDLE scm = service_windows_open_scm(SC_MANAGER_CONNECT);
+  if (scm == NULL) {
+    return service_result_error;
+  }
+
+  SC_HANDLE svc = service_windows_open_service(scm, SERVICE_QUERY_STATUS);
+  if (svc == NULL) {
+    CloseServiceHandle(scm);
+    return service_result_not_installed;
+  }
+
+  int interval_ms = 300;
+  int iterations = timeout_ms / interval_ms;
+  SERVICE_STATUS status;
+  for (int i = 0; i < iterations; i++) {
+    if (!QueryServiceStatus(svc, &status)) {
+      CloseServiceHandle(svc);
+      CloseServiceHandle(scm);
+      return service_result_error;
+    }
+    if (status.dwCurrentState == SERVICE_STOPPED) {
+      CloseServiceHandle(svc);
+      CloseServiceHandle(scm);
+      return service_result_ok;
+    }
+    Sleep(interval_ms);
+  }
+
+  CloseServiceHandle(svc);
+  CloseServiceHandle(scm);
+  return service_result_timeout;
+}
+
+static int service_windows_wait_for_start(int timeout_ms) {
+  SC_HANDLE scm = service_windows_open_scm(SC_MANAGER_CONNECT);
+  if (scm == NULL) {
+    return service_result_error;
+  }
+
+  SC_HANDLE svc = service_windows_open_service(scm, SERVICE_QUERY_STATUS);
+  if (svc == NULL) {
+    CloseServiceHandle(scm);
+    return service_result_not_installed;
+  }
+
+  int interval_ms = 500;
+  int iterations = timeout_ms / interval_ms;
+  SERVICE_STATUS status;
+  for (int i = 0; i < iterations; i++) {
+    if (!QueryServiceStatus(svc, &status)) {
+      CloseServiceHandle(svc);
+      CloseServiceHandle(scm);
+      return service_result_error;
+    }
+    if (status.dwCurrentState == SERVICE_RUNNING) {
+      CloseServiceHandle(svc);
+      CloseServiceHandle(scm);
+      return service_result_ok;
+    }
+    Sleep(interval_ms);
+  }
+
+  CloseServiceHandle(svc);
+  CloseServiceHandle(scm);
+  return service_result_timeout;
+}
+
 static service_ops_t windows_service_ops = {
   service_windows_stop,
   service_windows_start,
   service_windows_is_running,
   service_windows_install,
   service_windows_uninstall,
+  service_windows_wait_for_stop,
+  service_windows_wait_for_start,
   "offs-daemon"
 };
 

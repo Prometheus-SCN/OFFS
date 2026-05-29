@@ -49,9 +49,15 @@ if(OFFS_CLI_SRC)
   target_compile_definitions(offs_cli PRIVATE OFFS_VERSION="${OFFS_VERSION}")
 endif()
 
-# Standalone updater binary
-add_executable(offs-updater src/Updater/updater_main.c)
+# Standalone updater binary with platform service management
+add_executable(offs-updater
+  src/Updater/updater_main.c
+  src/Service/service_linux.c
+  src/Service/service_macos.c
+  src/Service/service_windows.c
+)
 target_link_libraries(offs-updater PRIVATE pthread)
+target_include_directories(offs-updater PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 include(CTest)
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test/CMakeLists.txt)
