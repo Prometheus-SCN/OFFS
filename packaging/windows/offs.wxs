@@ -4,6 +4,8 @@
            Manufacturer="Prometheus-SCN" UpgradeCode="12345678-1234-1234-1234-123456789ABC">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+    <Icon Id="OffsIcon" SourceFile="offs.ico" />
+    <Property Id="ARPPRODUCTICON" Value="OffsIcon" />
     <MediaTemplate EmbedCab="yes" />
     <Feature Id="Complete" Title="OFFS" Level="1">
       <ComponentGroupRef Id="Binaries" />

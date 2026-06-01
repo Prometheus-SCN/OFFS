@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+# Binary installed to /usr/local/bin by pkgbuild --root
+# No service to manage — relay is run manually
+echo "offs_relay installed to /usr/local/bin/offs_relay"

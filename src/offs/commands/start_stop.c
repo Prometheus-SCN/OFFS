@@ -4,12 +4,16 @@
 
 #include "../client.h"
 #include "../l10n/en.h"
-#include "ClientAPI/client_api_wire.h"
-#include <cbor.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
+#include <errno.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 int cmd_start(int argc, char** argv, cli_client_t* client) {
   (void)client;
@@ -46,19 +50,37 @@ int cmd_start(int argc, char** argv, cli_client_t* client) {
   return 0;
 }
 
+static int _is_daemon_running(void) {
+#ifdef _WIN32
+  return system("sc query offs-daemon > nul 2>&1") == 0 ? 1 : 0;
+#else
+  int result = system("pgrep -x offsd > /dev/null 2>&1");
+  return (result == 0) ? 1 : 0;
+#endif
+}
+
 int cmd_stop(int argc, char** argv, cli_client_t* client) {
-  (void)argc; (void)argv;
+  (void)argc; (void)argv; (void)client;
 
-  cbor_item_t* request = client_api_shutdown_request_encode();
-  cbor_item_t* response = cli_client_send(client, request);
-  cbor_decref(&request);
-
-  if (response == NULL) {
+  if (!_is_daemon_running()) {
     fprintf(stderr, "%s\n", L10N_DAEMON_UNREACHABLE);
     return 1;
   }
 
-  cbor_decref(&response);
+#ifdef _WIN32
+  int result = system("sc stop offs-daemon > nul 2>&1");
+  if (result != 0) {
+    fprintf(stderr, "Failed to stop daemon service\n");
+    return 1;
+  }
+#else
+  int result = system("pkill -TERM offsd 2>/dev/null");
+  if (result != 0) {
+    fprintf(stderr, "Failed to stop daemon\n");
+    return 1;
+  }
+#endif
+
   printf("%s\n", L10N_DAEMON_STOPPED);
   return 0;
 }

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="OFFS Relay" Language="1033" Version="0.1.0"
+           Manufacturer="Prometheus-SCN" UpgradeCode="62345678-1234-1234-1234-123456789ABC">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Feature Id="Complete" Title="OFFS Relay" Level="1">
+      <ComponentGroupRef Id="Binaries" />
+    </Feature>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="OFFS Relay">
+          <Component Id="OffsRelay" Guid="72345678-1234-1234-1234-123456789ABC">
+            <File Id="offsRelayExe" Name="offs_relay.exe" Source="offs_relay.exe" KeyPath="yes" />
+            <Environment Id="OffsRelayPath" Action="set" Name="PATH"
+                         Part="last" System="yes" Value="[INSTALLDIR]" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+    <ComponentGroup Id="Binaries">
+      <ComponentRef Id="OffsRelay" />
+    </ComponentGroup>
+  </Product>
+</Wix>

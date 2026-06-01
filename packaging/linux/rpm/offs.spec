@@ -23,6 +23,7 @@ install -Dm755 offs-daemon %{buildroot}/usr/bin/offs-daemon
 install -Dm755 offs-cli %{buildroot}/usr/bin/offs
 install -Dm755 offs-updater %{buildroot}/usr/bin/offs-updater
 install -Dm644 packaging/linux/rpm/offs-daemon.service %{buildroot}/usr/lib/systemd/system/offs-daemon.service
+install -Dm644 packaging/linux/offs.png %{buildroot}/usr/share/icons/hicolor/256x256/apps/offs.png
 
 %post
 %systemd_post offs-daemon.service
@@ -38,3 +39,4 @@ install -Dm644 packaging/linux/rpm/offs-daemon.service %{buildroot}/usr/lib/syst
 /usr/bin/offs
 /usr/bin/offs-updater
 /usr/lib/systemd/system/offs-daemon.service
+/usr/share/icons/hicolor/256x256/apps/offs.png
