@@ -35,6 +35,7 @@
 #include "Version/version.h"
 #include "ClientAPI/update_status_handler.h"
 #include "Util/allocator.h"
+#include "Util/log.h"
 #include <cJSON.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,6 +82,12 @@ typedef struct {
   const char* pid_file;
   int         worker_count;
   int         foreground;
+  const char* log_level_str;
+  int         log_structured;
+  const char* metrics_server_url;
+  const char* ca_cert_path;
+  const char* node_cert_path;
+  const char* node_key_path;
 } offsd_args_t;
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -99,6 +106,12 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "  --pid-file <path>    PID file path\n");
   fprintf(stderr, "  --workers <n>        Worker count, 0=auto (default: 0)\n");
   fprintf(stderr, "  --foreground         Run in foreground (do not daemonize)\n");
+  fprintf(stderr, "  --log-level <lvl>    Log level: trace, debug, info, warn, error, fatal (default: info)\n");
+  fprintf(stderr, "  --log-structured     Enable key=value structured log output\n");
+  fprintf(stderr, "  --metrics-server <url>  Metrics server URL for topology reports\n");
+  fprintf(stderr, "  --ca-cert <path>      CA certificate PEM path\n");
+  fprintf(stderr, "  --node-cert <path>    Node certificate PEM path\n");
+  fprintf(stderr, "  --node-key <path>     Node private key PEM path\n");
   fprintf(stderr, "  --help               Show this help\n");
 }
 
@@ -206,6 +219,36 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
     }
   }
 
+  /* [metrics] section */
+  cJSON* metrics_section = cJSON_GetObjectItem(root, "metrics");
+  if (metrics_section != NULL) {
+    cJSON* server_url = cJSON_GetObjectItem(metrics_section, "server-url");
+    if (cJSON_IsString(server_url) && args->metrics_server_url == NULL) {
+      args->metrics_server_url = strdup(server_url->valuestring);
+      if (args->metrics_server_url == NULL) { cJSON_Delete(root); return -1; }
+    }
+  }
+
+  /* [tls] section */
+  cJSON* tls_section = cJSON_GetObjectItem(root, "tls");
+  if (tls_section != NULL) {
+    cJSON* ca_cert = cJSON_GetObjectItem(tls_section, "ca-cert");
+    if (cJSON_IsString(ca_cert) && args->ca_cert_path == NULL) {
+      args->ca_cert_path = strdup(ca_cert->valuestring);
+      if (args->ca_cert_path == NULL) { cJSON_Delete(root); return -1; }
+    }
+    cJSON* node_cert = cJSON_GetObjectItem(tls_section, "node-cert");
+    if (cJSON_IsString(node_cert) && args->node_cert_path == NULL) {
+      args->node_cert_path = strdup(node_cert->valuestring);
+      if (args->node_cert_path == NULL) { cJSON_Delete(root); return -1; }
+    }
+    cJSON* node_key = cJSON_GetObjectItem(tls_section, "node-key");
+    if (cJSON_IsString(node_key) && args->node_key_path == NULL) {
+      args->node_key_path = strdup(node_key->valuestring);
+      if (args->node_key_path == NULL) { cJSON_Delete(root); return -1; }
+    }
+  }
+
   cJSON_Delete(root);
   return 0;
 }
@@ -235,6 +278,18 @@ static int _parse_args(int argc, char** argv, offsd_args_t* args) {
       if (args->worker_count < 0) args->worker_count = 0;
     } else if (strcmp(argv[i], "--foreground") == 0) {
       args->foreground = 1;
+    } else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
+      args->log_level_str = argv[++i];
+    } else if (strcmp(argv[i], "--log-structured") == 0) {
+      args->log_structured = 1;
+    } else if (strcmp(argv[i], "--metrics-server") == 0 && i + 1 < argc) {
+      args->metrics_server_url = argv[++i];
+    } else if (strcmp(argv[i], "--ca-cert") == 0 && i + 1 < argc) {
+      args->ca_cert_path = argv[++i];
+    } else if (strcmp(argv[i], "--node-cert") == 0 && i + 1 < argc) {
+      args->node_cert_path = argv[++i];
+    } else if (strcmp(argv[i], "--node-key") == 0 && i + 1 < argc) {
+      args->node_key_path = argv[++i];
     } else if (strcmp(argv[i], "--help") == 0) {
       _print_usage(argv[0]);
       return 1;
@@ -295,6 +350,10 @@ static void _free_args(offsd_args_t* args) {
   if (args->host != NULL)        free((void*)args->host);
   if (args->unix_path != NULL)   free((void*)args->unix_path);
   if (args->cache_dir != NULL)    free((void*)args->cache_dir);
+  if (args->metrics_server_url != NULL) free((void*)args->metrics_server_url);
+  if (args->ca_cert_path != NULL)     free((void*)args->ca_cert_path);
+  if (args->node_cert_path != NULL)   free((void*)args->node_cert_path);
+  if (args->node_key_path != NULL)    free((void*)args->node_key_path);
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -460,6 +519,53 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
     scheduler_pool_destroy(server->pool);
     return -1;
   }
+
+  /* Wire TLS cert paths into authority before init */
+  if (args->ca_cert_path != NULL) {
+    if (authority_load_ca_cert(server->authority, args->ca_cert_path) != 0) {
+      fprintf(stderr, "Failed to load CA certificate: %s\n", args->ca_cert_path);
+      authority_destroy(server->authority);
+      if (server->http_server != NULL) http_server_destroy(server->http_server);
+      tuple_cache_destroy(server->tuple_cache);
+      ofd_cache_destroy(server->ofd_cache);
+      block_cache_destroy(server->block_cache);
+      timer_actor_destroy(server->timer);
+      scheduler_pool_stop(server->pool);
+      scheduler_pool_destroy(server->pool);
+      return -1;
+    }
+  }
+  if (args->node_cert_path != NULL) {
+    server->authority->node_cert_path = strdup(args->node_cert_path);
+    if (server->authority->node_cert_path == NULL) {
+      fprintf(stderr, "Out of memory copying node-cert path\n");
+      authority_destroy(server->authority);
+      if (server->http_server != NULL) http_server_destroy(server->http_server);
+      tuple_cache_destroy(server->tuple_cache);
+      ofd_cache_destroy(server->ofd_cache);
+      block_cache_destroy(server->block_cache);
+      timer_actor_destroy(server->timer);
+      scheduler_pool_stop(server->pool);
+      scheduler_pool_destroy(server->pool);
+      return -1;
+    }
+  }
+  if (args->node_key_path != NULL) {
+    server->authority->node_key_path = strdup(args->node_key_path);
+    if (server->authority->node_key_path == NULL) {
+      fprintf(stderr, "Out of memory copying node-key path\n");
+      authority_destroy(server->authority);
+      if (server->http_server != NULL) http_server_destroy(server->http_server);
+      tuple_cache_destroy(server->tuple_cache);
+      ofd_cache_destroy(server->ofd_cache);
+      block_cache_destroy(server->block_cache);
+      timer_actor_destroy(server->timer);
+      scheduler_pool_stop(server->pool);
+      scheduler_pool_destroy(server->pool);
+      return -1;
+    }
+  }
+
   authority_init_local_id(server->authority);
 
   /* Network */
@@ -692,6 +798,14 @@ int main(int argc, char** argv) {
     return parse_result > 0 ? 0 : 1;
   }
 
+  /* Apply log configuration */
+  if (args.log_level_str != NULL) {
+    log_set_level(log_level_from_string(args.log_level_str));
+  }
+  if (args.log_structured) {
+    log_set_structured(true);
+  }
+
   /* Print banner (before daemonization so it's visible) */
   printf("OFF System Daemon (offsd)\n");
   printf("  Host: %s\n", args.host);
@@ -737,6 +851,11 @@ int main(int argc, char** argv) {
 
   /* Apply any pending config from a previous shutdown */
   _apply_pending_config(&server, args.data_dir);
+
+  /* Apply metrics server URL from CLI/config file */
+  if (args.metrics_server_url != NULL) {
+    server.node.authority->metrics_server_url = (char*)args.metrics_server_url;
+  }
 
   /* Start listening */
   _start_listening(&server, args.host, args.port, args.unix_path);

@@ -59,6 +59,59 @@ add_executable(offs-updater
 target_link_libraries(offs-updater PRIVATE pthread)
 target_include_directories(offs-updater PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# Metrics aggregation server
+add_executable(offs-metrics src/offs-metrics/metrics_server.c)
+target_link_libraries(offs-metrics PRIVATE offs)
+target_link_libraries(offs-metrics PRIVATE ${CMAKE_BINARY_DIR}/deps/libcbor/libcbor.a)
+target_link_libraries(offs-metrics PRIVATE cjson)
+target_include_directories(offs-metrics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/liboffs/src)
+target_include_directories(offs-metrics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/liboffs/deps/cJSON)
+target_include_directories(offs-metrics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/liboffs/deps/http-parser)
+target_include_directories(offs-metrics PRIVATE ${CMAKE_BINARY_DIR}/deps/libcbor/include)
+target_include_directories(offs-metrics PRIVATE ${POLL_DANCER_ROOT}/include)
+target_include_directories(offs-metrics PRIVATE ${POLL_DANCER_ROOT}/src)
+target_link_libraries(offs-metrics PRIVATE blake3 hashmap http-parser)
+
+# --- Docker container targets ---
+find_program(DOCKER docker)
+if(DOCKER)
+  set(DOCKER_CONTEXT ${CMAKE_CURRENT_SOURCE_DIR})
+
+  add_custom_target(docker-relay
+    COMMAND ${DOCKER} build
+      -f ${CMAKE_CURRENT_SOURCE_DIR}/docker/Dockerfile.relay
+      -t offs-relay:${OFFS_VERSION}
+      -t offs-relay:latest
+      ${DOCKER_CONTEXT}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Building Docker image: offs-relay"
+    VERBATIM
+  )
+
+  add_custom_target(docker-metrics
+    COMMAND ${DOCKER} build
+      -f ${CMAKE_CURRENT_SOURCE_DIR}/docker/Dockerfile.metrics
+      -t offs-metrics:${OFFS_VERSION}
+      -t offs-metrics:latest
+      ${DOCKER_CONTEXT}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Building Docker image: offs-metrics"
+    VERBATIM
+  )
+
+  add_custom_target(docker-all DEPENDS docker-relay docker-metrics)
+else()
+  add_custom_target(docker-relay
+    COMMAND ${CMAKE_COMMAND} -E echo "docker not found — skipping docker-relay"
+  )
+  add_custom_target(docker-metrics
+    COMMAND ${CMAKE_COMMAND} -E echo "docker not found — skipping docker-metrics"
+  )
+  add_custom_target(docker-all
+    COMMAND ${CMAKE_COMMAND} -E echo "docker not found — skipping docker-all"
+  )
+endif()
+
 include(CTest)
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test/CMakeLists.txt)
   add_subdirectory(test)
