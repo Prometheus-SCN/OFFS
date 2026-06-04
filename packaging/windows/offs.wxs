@@ -29,6 +29,9 @@
           <Component Id="OffsUpdater" Guid="42345678-1234-1234-1234-123456789ABC">
             <File Id="offsUpdaterExe" Name="offs-updater.exe" Source="offs-updater.exe" KeyPath="yes" />
           </Component>
+          <Component Id="OffsCa" Guid="52345678-1234-1234-1234-123456789ABC">
+            <File Id="offsCaExe" Name="offs-ca.exe" Source="offs-ca.exe" KeyPath="yes" />
+          </Component>
         </Directory>
       </Directory>
     </Directory>
@@ -36,6 +39,7 @@
       <ComponentRef Id="OffsDaemon" />
       <ComponentRef Id="OffsCli" />
       <ComponentRef Id="OffsUpdater" />
+      <ComponentRef Id="OffsCa" />
     </ComponentGroup>
   </Product>
 </Wix>

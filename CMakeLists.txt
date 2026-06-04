@@ -59,6 +59,14 @@ add_executable(offs-updater
 target_link_libraries(offs-updater PRIVATE pthread)
 target_include_directories(offs-updater PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# CA signing tool (built from liboffs)
+add_executable(offs-ca
+  ${CMAKE_CURRENT_SOURCE_DIR}/deps/liboffs/tools/offs-ca/main.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/deps/liboffs/tools/offs-ca/ca_ops.c
+)
+target_include_directories(offs-ca PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/liboffs/tools/offs-ca)
+target_link_libraries(offs-ca PRIVATE ${OPENSSL_LIBRARIES})
+
 # Metrics aggregation server
 add_executable(offs-metrics src/offs-metrics/metrics_server.c)
 target_link_libraries(offs-metrics PRIVATE offs)

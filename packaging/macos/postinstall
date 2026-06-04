@@ -3,3 +3,4 @@ set -e
 cp /tmp/offs-pkg/com.offs.daemon.plist /Library/LaunchDaemons/
 launchctl bootstrap system /Library/LaunchDaemons/com.offs.daemon.plist 2>/dev/null || \
   launchctl load -w /Library/LaunchDaemons/com.offs.daemon.plist
+echo "Installed: offs-daemon, offs, offs-updater, offs-ca"

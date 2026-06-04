@@ -57,6 +57,9 @@ case "$PLATFORM" in
     if [ -f "$BUILD_DIR/offs_cli" ]; then
       cp "$BUILD_DIR/offs_cli" "$BUNDLE/offs-cli"
     fi
+    if [ -f "$BUILD_DIR/offs-ca" ]; then
+      cp "$BUILD_DIR/offs-ca" "$BUNDLE/offs-ca"
+    fi
 
     # Version file
     echo "$TAG" > "$BUNDLE/VERSION"
@@ -83,6 +86,9 @@ case "$PLATFORM" in
     cp "$BUNDLE/offs-daemon" "$DEB_DIR/usr/bin/"
     cp "$BUNDLE/offs-cli" "$DEB_DIR/usr/bin/"
     cp "$BUNDLE/offs-updater" "$DEB_DIR/usr/bin/"
+    if [ -f "$BUNDLE/offs-ca" ]; then
+      cp "$BUNDLE/offs-ca" "$DEB_DIR/usr/bin/"
+    fi
     cp "$PROJECT_DIR/packaging/linux/debian/offs-daemon.service" "$DEB_DIR/usr/lib/systemd/system/"
     cp "$PROJECT_DIR/packaging/linux/offs.png" "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/"
     chmod 755 "$DEB_DIR/DEBIAN/postinst" "$DEB_DIR/DEBIAN/prerm" "$DEB_DIR/DEBIAN/postrm"
@@ -141,6 +147,9 @@ case "$PLATFORM" in
     if [ -f "$BUILD_DIR/offs_cli" ]; then
       cp "$BUILD_DIR/offs_cli" "$BUNDLE/offs-cli"
     fi
+    if [ -f "$BUILD_DIR/offs-ca" ]; then
+      cp "$BUILD_DIR/offs-ca" "$BUNDLE/offs-ca"
+    fi
     echo "$TAG" > "$BUNDLE/VERSION"
     mkdir -p "$BUNDLE/share/icons"
     cp "$PROJECT_DIR/packaging/macos/offs.icns" "$BUNDLE/share/icons/"
@@ -154,6 +163,9 @@ case "$PLATFORM" in
       cp "$BUNDLE/offs-daemon" "$BUILD_DIR/pkg/root/usr/local/bin/"
       cp "$BUNDLE/offs-cli" "$BUILD_DIR/pkg/root/usr/local/bin/"
       cp "$BUNDLE/offs-updater" "$BUILD_DIR/pkg/root/usr/local/bin/"
+      if [ -f "$BUNDLE/offs-ca" ]; then
+        cp "$BUNDLE/offs-ca" "$BUILD_DIR/pkg/root/usr/local/bin/"
+      fi
       pkgbuild --root "$BUILD_DIR/pkg/root" \
         --scripts "$PROJECT_DIR/packaging/macos" \
         --identifier com.offs.daemon \
@@ -197,6 +209,9 @@ case "$PLATFORM" in
     fi
     if [ -f "$BUILD_DIR/offs_cli.exe" ]; then
       cp "$BUILD_DIR/offs_cli.exe" "$BUNDLE/offs-cli.exe"
+    fi
+    if [ -f "$BUILD_DIR/offs-ca.exe" ]; then
+      cp "$BUILD_DIR/offs-ca.exe" "$BUNDLE/offs-ca.exe"
     fi
     echo "$TAG" > "$BUNDLE/VERSION"
     cd "$BUNDLE" && sha256sum * > checksums.sha256 && cd ..

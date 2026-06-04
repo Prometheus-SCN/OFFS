@@ -7,4 +7,4 @@ Depends: libc6 (>= 2.28), openssl (>= 3.0), systemd
 Maintainer: Prometheus-SCN <support@prometheus-scn.org>
 Description: Owner Free File System daemon and CLI
  OFFS is a decentralized, content-addressed storage system.
- This package installs the offs-daemon system service and offs CLI tool.
+ This package installs the offs-daemon system service, offs CLI tool, and offs-ca certificate authority tool.
