@@ -57,8 +57,8 @@ case "$PLATFORM" in
     if [ -f "$BUILD_DIR/offs_cli" ]; then
       cp "$BUILD_DIR/offs_cli" "$BUNDLE/offs-cli"
     fi
-    if [ -f "$BUILD_DIR/offs-ca" ]; then
-      cp "$BUILD_DIR/offs-ca" "$BUNDLE/offs-ca"
+    if [ -f "$BUILD_DIR/deps/liboffs/tools/offs-ca/offs-ca" ]; then
+      cp "$BUILD_DIR/deps/liboffs/tools/offs-ca/offs-ca" "$BUNDLE/offs-ca"
     fi
 
     # Version file
@@ -147,8 +147,8 @@ case "$PLATFORM" in
     if [ -f "$BUILD_DIR/offs_cli" ]; then
       cp "$BUILD_DIR/offs_cli" "$BUNDLE/offs-cli"
     fi
-    if [ -f "$BUILD_DIR/offs-ca" ]; then
-      cp "$BUILD_DIR/offs-ca" "$BUNDLE/offs-ca"
+    if [ -f "$BUILD_DIR/deps/liboffs/tools/offs-ca/offs-ca" ]; then
+      cp "$BUILD_DIR/deps/liboffs/tools/offs-ca/offs-ca" "$BUNDLE/offs-ca"
     fi
     echo "$TAG" > "$BUNDLE/VERSION"
     mkdir -p "$BUNDLE/share/icons"
@@ -210,8 +210,8 @@ case "$PLATFORM" in
     if [ -f "$BUILD_DIR/offs_cli.exe" ]; then
       cp "$BUILD_DIR/offs_cli.exe" "$BUNDLE/offs-cli.exe"
     fi
-    if [ -f "$BUILD_DIR/offs-ca.exe" ]; then
-      cp "$BUILD_DIR/offs-ca.exe" "$BUNDLE/offs-ca.exe"
+    if [ -f "$BUILD_DIR/deps/liboffs/tools/offs-ca/offs-ca.exe" ]; then
+      cp "$BUILD_DIR/deps/liboffs/tools/offs-ca/offs-ca.exe" "$BUNDLE/offs-ca.exe"
     fi
     echo "$TAG" > "$BUNDLE/VERSION"
     cd "$BUNDLE" && sha256sum * > checksums.sha256 && cd ..
