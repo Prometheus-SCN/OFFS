@@ -1,0 +1,10 @@
+Package: offs-relay
+Version: 0.1.0
+Section: net
+Priority: optional
+Architecture: amd64
+Depends: libc6 (>= 2.28), openssl (>= 3.0)
+Maintainer: Prometheus-SCN <support@prometheus-scn.org>
+Description: OFFS relay server
+ A QUIC-based relay server for the Owner Free File System.
+ This package installs the offs_relay binary to /usr/bin.

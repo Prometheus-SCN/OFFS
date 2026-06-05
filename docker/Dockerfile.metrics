@@ -1,0 +1,80 @@
+# Multi-stage build for the OFFS metrics server
+#
+# Build:  docker build -f docker/Dockerfile.metrics -t offs-metrics .
+# Run:    docker run -p 9090:9090 offs-metrics
+#
+# The metrics server receives CBOR topology reports from offsd nodes
+# and serves a JSON status API. It does not require TLS certs.
+
+# --- Builder stage: compile offs-metrics and all dependencies ---
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git libnuma-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# OpenSSL 3 from source (needed by msquic)
+COPY deps/liboffs/deps/msquic/submodules/openssl /build/openssl
+WORKDIR /build/openssl
+RUN ./config --prefix=/usr/local --libdir=lib \
+    && make -j$(nproc) \
+    && make install_sw \
+    && ldconfig
+
+# msquic from source
+COPY deps/liboffs/deps/msquic /build/msquic
+WORKDIR /build/msquic
+RUN mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cmake --install . --prefix /usr/local
+
+# poll-dancer
+ARG POLL_DANCER_ROOT=/build/poll-dancer
+COPY deps/poll-dancer /build/poll-dancer
+WORKDIR /build/poll-dancer
+RUN mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cp libpoll_dancer.a /usr/local/lib/
+
+# libcbor
+COPY deps/liboffs/deps/libcbor /build/libcbor
+WORKDIR /build/libcbor
+RUN mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cmake --install . --prefix /usr/local
+
+# Build OFFS project (produces offs-metrics target)
+COPY . /build/offs
+WORKDIR /build/offs
+RUN mkdir build && cd build \
+    && cmake .. \
+       -DCMAKE_BUILD_TYPE=Release \
+       -DPOLL_DANCER_ROOT=/build/poll-dancer \
+    && cmake --build . -j$(nproc) --target offs-metrics
+
+# --- Runtime stage: minimal image with only what's needed ---
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnuma1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy OpenSSL 3 and msquic from builder
+COPY --from=builder /usr/local/lib/libssl.so.3 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libcrypto.so.3 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libmsquic.so* /usr/local/lib/
+RUN ldconfig
+
+# Copy the metrics server binary
+COPY --from=builder /build/offs/build/offs-metrics /usr/bin/offs-metrics
+
+EXPOSE 9090
+
+ENTRYPOINT ["offs-metrics"]
+CMD ["--host", "0.0.0.0", "--port", "9090"]

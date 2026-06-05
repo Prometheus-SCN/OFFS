@@ -1,0 +1,86 @@
+# Multi-stage build for the OFFS relay server (offs_relay)
+#
+# Build:  docker build -f docker/Dockerfile.relay -t offs-relay .
+# Run:    docker run -p 14000:14000 offs-relay
+#
+# With TLS certs:
+#   docker run -p 14000:14000 \
+#     -v /path/to/certs:/etc/offs/certs:ro \
+#     offs-relay --cert /etc/offs/certs/relay.pem \
+#                --key /etc/offs/certs/relay-key.pem
+
+# --- Builder stage: compile offs_relay and all dependencies ---
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git libnuma-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# OpenSSL 3 from source (needed by msquic)
+COPY deps/liboffs/deps/msquic/submodules/openssl /build/openssl
+WORKDIR /build/openssl
+RUN ./config --prefix=/usr/local --libdir=lib \
+    && make -j$(nproc) \
+    && make install_sw \
+    && ldconfig
+
+# msquic from source
+COPY deps/liboffs/deps/msquic /build/msquic
+WORKDIR /build/msquic
+RUN mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cmake --install . --prefix /usr/local
+
+# poll-dancer
+ARG POLL_DANCER_ROOT=/build/poll-dancer
+COPY deps/poll-dancer /build/poll-dancer
+WORKDIR /build/poll-dancer
+RUN mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cp libpoll_dancer.a /usr/local/lib/
+
+# libcbor
+COPY deps/liboffs/deps/libcbor /build/libcbor
+WORKDIR /build/libcbor
+RUN mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cmake --install . --prefix /usr/local
+
+# Build liboffs (which produces the offs_relay target)
+COPY deps/liboffs /build/liboffs
+WORKDIR /build/liboffs
+RUN mkdir build && cd build \
+    && cmake .. \
+       -DCMAKE_BUILD_TYPE=Release \
+       -DPOLL_DANCER_ROOT=/build/poll-dancer \
+    && cmake --build . -j$(nproc) --target offs_relay
+
+# --- Runtime stage: minimal image with only what's needed ---
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnuma1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy OpenSSL 3 and msquic from builder
+COPY --from=builder /usr/local/lib/libssl.so.3 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libcrypto.so.3 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libmsquic.so* /usr/local/lib/
+RUN ldconfig
+
+# Copy the relay binary
+COPY --from=builder /build/liboffs/build/src/Network/Relay/offs_relay /usr/bin/offs_relay
+
+# Cert mount point
+RUN mkdir -p /etc/offs/certs
+
+EXPOSE 14000
+
+ENTRYPOINT ["offs_relay"]
+CMD ["--host", "0.0.0.0", "--port", "14000"]
