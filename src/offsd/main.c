@@ -454,7 +454,7 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
   scheduler_pool_start(server->pool);
 
   /* Timer actor */
-  server->timer = timer_actor_create();
+  server->timer = timer_actor_create(server->pool);
 
   /* Configuration */
   server->config = config_default();

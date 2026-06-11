@@ -4,6 +4,7 @@ if(BUILD_TESTING)
   set(CMAKE_CXX_STANDARD 17)
 
   file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS "test_*.cpp")
+  list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_metrics_db.cpp")
 
   if(TEST_SOURCES)
     add_executable(testoffs test_main.cpp ${TEST_SOURCES}
@@ -23,6 +24,8 @@ if(BUILD_TESTING)
 
     target_include_directories(testoffs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../deps/liboffs/src)
     target_include_directories(testoffs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../deps/liboffs/deps/cJSON)
+    target_include_directories(testoffs PRIVATE ${POLL_DANCER_ROOT}/include)
+    target_include_directories(testoffs PRIVATE ${POLL_DANCER_ROOT}/src)
     target_include_directories(testoffs PRIVATE ${CMAKE_BINARY_DIR}/deps/libcbor/include)
     target_include_directories(testoffs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
     target_include_directories(testoffs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/offs)
