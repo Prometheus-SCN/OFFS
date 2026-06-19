@@ -12,7 +12,7 @@ extern "C" {
 TEST(ClientTest, CreateDestroy) {
   cli_client_t* client = cli_client_create("/tmp/test.sock");
   ASSERT_NE(client, nullptr);
-  EXPECT_EQ(client->sock_fd, -1);
+  EXPECT_EQ(client->socket, nullptr);
   EXPECT_EQ(client->connected, 0);
   EXPECT_STREQ(client->socket_path, "/tmp/test.sock");
   cli_client_destroy(client);

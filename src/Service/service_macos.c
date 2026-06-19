@@ -4,9 +4,9 @@
 
 #include "service.h"
 #include <stdlib.h>
-#include <unistd.h>
 
 #ifdef __APPLE__
+#include <unistd.h>
 
 #define PLIST_PATH "/Library/LaunchDaemons/com.offs.daemon.plist"
 #define SERVICE_LABEL "com.offs.daemon"

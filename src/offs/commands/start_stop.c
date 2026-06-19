@@ -4,15 +4,15 @@
 
 #include "../client.h"
 #include "../l10n/en.h"
+#include "Platform/platform_time.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <signal.h>
 #include <errno.h>
 
-#ifdef _WIN32
-#include <windows.h>
+#ifndef _WIN32
+#include <unistd.h>
 #endif
 
 int cmd_start(int argc, char** argv, cli_client_t* client) {
@@ -31,6 +31,20 @@ int cmd_start(int argc, char** argv, cli_client_t* client) {
     }
   }
 
+#ifdef _WIN32
+  /* Windows daemon is managed by the Service Control Manager. Config/foreground
+   * flags are not applicable to a service start; they are accepted but ignored
+   * to keep the CLI surface consistent across platforms. */
+  (void)config_path;
+  (void)foreground;
+  int result = system("sc start offs-daemon > nul 2>&1");
+  if (result != 0) {
+    fprintf(stderr, "Failed to start daemon service\n");
+    return 1;
+  }
+  printf("Daemon started\n");
+  return 0;
+#else
   pid_t pid = fork();
   if (pid < 0) { perror("fork"); return 1; }
   if (pid == 0) {
@@ -48,6 +62,7 @@ int cmd_start(int argc, char** argv, cli_client_t* client) {
 
   printf(L10N_DAEMON_STARTED "\n", pid);
   return 0;
+#endif
 }
 
 static int _is_daemon_running(void) {
@@ -88,6 +103,6 @@ int cmd_stop(int argc, char** argv, cli_client_t* client) {
 int cmd_restart(int argc, char** argv, cli_client_t* client) {
   int ret = cmd_stop(0, NULL, client);
   if (ret != 0) return ret;
-  sleep(1); /* Give daemon time to release the socket */
+  platform_sleep_ms(1000); /* Give daemon time to release the socket/pipe */
   return cmd_start(argc, argv, NULL);
 }
