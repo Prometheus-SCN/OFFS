@@ -656,6 +656,11 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
       scheduler_pool_destroy(server->pool);
       return -1;
     }
+    /* Wire config management onto the local socket so `offs config show/set/
+       generate-auth/reload` reach the node + pending-config store. node is
+       borrowed (owned by server); data_dir is copied by the setter. */
+    unix_transport_set_config_ctx(server->unix_transport, &server->node,
+                                  args->data_dir);
   }
 
   /* Update actor — auto-update checks.
