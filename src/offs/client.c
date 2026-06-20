@@ -9,6 +9,7 @@
 
 #include "client.h"
 #include "Platform/platform_local.h"
+#include "Platform/platform_time.h"
 #include "Util/allocator.h"
 #include "Network/stream_framer.h"
 #include <stdlib.h>
@@ -17,10 +18,21 @@
 
 #define MAX_RESPONSE_SIZE (16 * 1024 * 1024) /* 16 MB sanity cap */
 
-/* Helper: send exactly len bytes, handling partial writes and EINTR.
+/* On Windows the named-pipe client handle (the fallback when AF_UNIX is
+   unavailable) is non-blocking: platform_socket_recv/send return EAGAIN when
+   no data/space is immediately available. The CLI is a synchronous
+   request/response client, so retry EAGAIN with a short sleep up to a bounded
+   total wait. This mirrors the blocking behaviour the POSIX AF_UNIX path
+   gives for free, and avoids hanging forever if the daemon dies without
+   closing the pipe (peer close surfaces as a 0-byte read, handled below). */
+#define CLI_EAGAIN_RETRY_MS 1
+#define CLI_EAGAIN_BUDGET_MS 30000
+
+/* Helper: send exactly len bytes, handling partial writes, EINTR, and EAGAIN.
    Returns 0 on success, -1 on error. */
 static int _send_all(platform_socket_t* sock, const uint8_t* data, size_t len) {
   size_t bytes_sent = 0;
+  unsigned int eagain_ms = 0;
   while (bytes_sent < len) {
     ssize_t result = platform_socket_send(sock, data + bytes_sent,
                                           len - bytes_sent);
@@ -28,22 +40,40 @@ static int _send_all(platform_socket_t* sock, const uint8_t* data, size_t len) {
       if (errno == EINTR) {
         continue;
       }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (eagain_ms >= CLI_EAGAIN_BUDGET_MS) {
+          return -1;
+        }
+        platform_sleep_ms(CLI_EAGAIN_RETRY_MS);
+        eagain_ms += CLI_EAGAIN_RETRY_MS;
+        continue;
+      }
       return -1;
     }
     bytes_sent += (size_t)result;
+    eagain_ms = 0; /* progress resets the wait budget */
   }
   return 0;
 }
 
-/* Helper: receive exactly len bytes, handling partial reads, EINTR,
+/* Helper: receive exactly len bytes, handling partial reads, EINTR, EAGAIN,
    and connection close. Returns 0 on success, -1 on error. */
 static int _recv_all(platform_socket_t* sock, uint8_t* data, size_t len) {
   size_t bytes_received = 0;
+  unsigned int eagain_ms = 0;
   while (bytes_received < len) {
     ssize_t result = platform_socket_recv(sock, data + bytes_received,
                                           len - bytes_received);
     if (result < 0) {
       if (errno == EINTR) {
+        continue;
+      }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (eagain_ms >= CLI_EAGAIN_BUDGET_MS) {
+          return -1;
+        }
+        platform_sleep_ms(CLI_EAGAIN_RETRY_MS);
+        eagain_ms += CLI_EAGAIN_RETRY_MS;
         continue;
       }
       return -1;
@@ -53,6 +83,7 @@ static int _recv_all(platform_socket_t* sock, uint8_t* data, size_t len) {
       return -1;
     }
     bytes_received += (size_t)result;
+    eagain_ms = 0; /* progress resets the wait budget */
   }
   return 0;
 }
