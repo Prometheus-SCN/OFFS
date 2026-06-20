@@ -4,9 +4,9 @@
 
 #include "service.h"
 #include <stdlib.h>
-#include <unistd.h>
 
 #if !defined(_WIN32) && !defined(__APPLE__)
+#include <unistd.h>
 
 static int service_linux_stop(void) {
   int result = system("systemctl stop offs-daemon 2>/dev/null");

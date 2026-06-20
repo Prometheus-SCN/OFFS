@@ -3,18 +3,24 @@
 //
 
 #include "Service/service.h"
+/* Header-only POSIX compat shim: maps unlink -> _unlink on MSVC so the
+ * standalone updater (which does not link offs.lib) can call unlink()
+ * unchanged on both platforms. */
+#include "Platform/platform_posix_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/stat.h>
 #include <time.h>
 
 #ifdef _WIN32
-#include <windows.h>
-#define SLEEP_MS(ms) Sleep(ms)
+#include <windows.h>   /* MAX_PATH, GetTempPath for the temp staging path */
+#include <process.h>   /* _execl, _getpid */
+#include <sys/stat.h>
+#define EXE_SUFFIX ".exe"
 #else
-#define SLEEP_MS(ms) usleep((ms) * 1000)
+#include <unistd.h>    /* getpid, execl */
+#include <sys/stat.h>
+#define EXE_SUFFIX ""
 #endif
 
 #define STARTUP_TIMEOUT_MS 30000
@@ -113,7 +119,13 @@ int main(int argc, char** argv) {
 
   FILE* pidf = fopen(PID_FILE, "w");
   if (pidf != NULL) {
-    fprintf(pidf, "%d\n", getpid());
+    fprintf(pidf, "%d\n",
+#ifdef _WIN32
+            _getpid()
+#else
+            getpid()
+#endif
+            );
     fclose(pidf);
   }
 
@@ -124,11 +136,11 @@ int main(int argc, char** argv) {
 
   if (mode == FINISH_SELF_REPLACE) {
     char src[1024], dst[1024];
-    snprintf(src, sizeof(src), "%s/offs-updater", staging_dir);
-    snprintf(dst, sizeof(dst), "%s/offs-updater", install_dir);
+    snprintf(src, sizeof(src), "%s/offs-updater" EXE_SUFFIX, staging_dir);
+    snprintf(dst, sizeof(dst), "%s/offs-updater" EXE_SUFFIX, install_dir);
     _copy_file(src, dst);
 
-    const char* files[] = {"offs-daemon", "offs-cli", NULL};
+    const char* files[] = {"offs-daemon" EXE_SUFFIX, "offs-cli" EXE_SUFFIX, NULL};
     for (int i = 0; files[i] != NULL; i++) {
       snprintf(src, sizeof(src), "%s/%s", staging_dir, files[i]);
       snprintf(dst, sizeof(dst), "%s/%s", install_dir, files[i]);
@@ -143,7 +155,7 @@ int main(int argc, char** argv) {
     }
     _log_write("Daemon stopped");
 
-    const char* files[] = {"offs-daemon", "offs-cli", NULL};
+    const char* files[] = {"offs-daemon" EXE_SUFFIX, "offs-cli" EXE_SUFFIX, NULL};
     char src[1024], dst[1024];
     for (int i = 0; files[i] != NULL; i++) {
       snprintf(src, sizeof(src), "%s/%s", staging_dir, files[i]);
@@ -152,14 +164,33 @@ int main(int argc, char** argv) {
     }
 
     char temp_updater[1024];
+#ifdef _WIN32
+    /* Windows locks a running .exe, so stage the new updater in the per-user
+     * temp dir and exec it from there. The original process exits as the temp
+     * takes over, releasing the install-dir binary for the --finish copy. */
+    char temp_dir[MAX_PATH];
+    if (GetTempPath(MAX_PATH, temp_dir) == 0) {
+      snprintf(temp_dir, sizeof(temp_dir), ".\\");
+    }
+    snprintf(temp_updater, sizeof(temp_updater), "%soffs-updater-temp" EXE_SUFFIX,
+             temp_dir);
+#else
     snprintf(temp_updater, sizeof(temp_updater), "/tmp/offs-updater-temp");
-    snprintf(src, sizeof(src), "%s/offs-updater", staging_dir);
+#endif
+    snprintf(src, sizeof(src), "%s/offs-updater" EXE_SUFFIX, staging_dir);
     _copy_file(src, temp_updater);
+#ifndef _WIN32
     chmod(temp_updater, 0755);
+#endif
 
     _log_write("Self-replacing via temp copy");
+#ifdef _WIN32
+    _execl(temp_updater, "offs-updater" EXE_SUFFIX, "--finish",
+           staging_dir, install_dir, backup_dir, NULL);
+#else
     execl(temp_updater, "offs-updater", "--finish",
           staging_dir, install_dir, backup_dir, NULL);
+#endif
 
     _log_write("ERROR: exec of temp updater failed, attempting direct service restart");
   }

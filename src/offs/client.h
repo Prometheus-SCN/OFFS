@@ -8,9 +8,13 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <cbor.h>
+#include "Platform/platform_socket.h"
 
 typedef struct {
-  int sock_fd;
+  /* Owned platform socket connected to the daemon's local endpoint
+   * (AF_UNIX on POSIX and Windows 10 1803+, named-pipe fallback on older
+   * Windows). NULL when disconnected. */
+  platform_socket_t* socket;
   const char* socket_path;
   uint8_t connected;
 } cli_client_t;

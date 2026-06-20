@@ -24,6 +24,23 @@
 #include <signal.h>
 #include <time.h>
 
+#ifdef _WIN32
+#include <windows.h>
+static HANDLE g_shutdown_event = NULL;
+static BOOL WINAPI _console_ctrl_handler(DWORD ctrl_type) {
+  switch (ctrl_type) {
+    case CTRL_C_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_BREAK_EVENT:
+      if (g_shutdown_event != NULL) {
+        SetEvent(g_shutdown_event);
+      }
+      return TRUE;
+  }
+  return FALSE;
+}
+#endif
+
 #define MAX_NODES 256
 #define MAX_HISTORY_PER_NODE 10
 
@@ -243,12 +260,19 @@ int main(int argc, char** argv) {
   printf("offs-metrics: listening on %s:%u\n", host, port);
 
   /* Wait for SIGINT/SIGTERM */
+#ifdef _WIN32
+  g_shutdown_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+  SetConsoleCtrlHandler(_console_ctrl_handler, TRUE);
+  WaitForSingleObject(g_shutdown_event, INFINITE);
+  SetConsoleCtrlHandler(_console_ctrl_handler, FALSE);
+#else
   sigset_t signal_set;
   sigemptyset(&signal_set);
   sigaddset(&signal_set, SIGINT);
   sigaddset(&signal_set, SIGTERM);
   int caught = 0;
   sigwait(&signal_set, &caught);
+#endif
 
   printf("offs-metrics: shutting down...\n");
   http_server_stop(server);

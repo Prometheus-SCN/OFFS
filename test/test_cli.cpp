@@ -6,12 +6,28 @@
 #include <cstdio>
 #include <string>
 
+/* MSVC's CRT has no setenv/unsetenv. _putenv_s with an empty value removes the
+ * variable (getenv then returns NULL), which is what the locale-detection
+ * tests below rely on. POSIX keeps the standard names. */
+#ifdef _WIN32
+#include <stdlib.h>
+static inline void offs_setenv(const char* name, const char* value) {
+  _putenv_s(name, value);
+}
+static inline void offs_unsetenv(const char* name) {
+  _putenv_s(name, "");
+}
+#define setenv(name, value, overwrite) offs_setenv(name, value)
+#define unsetenv(name) offs_unsetenv(name)
+#else
+#include <stdlib.h>
+#endif
+
 extern "C" {
 #include "cli_util.h"
 #include "l10n/en.h"
 #include "client.h"
 #include "Util/allocator.h"
-#include <stdlib.h>
 }
 
 TEST(L10NTest, AllStringsNonEmpty) {

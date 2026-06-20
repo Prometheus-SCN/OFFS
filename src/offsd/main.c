@@ -42,7 +42,9 @@
 #include <string.h>
 #include <signal.h>
 #include <time.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -59,10 +61,14 @@ static offs_node_t* g_node = NULL;
 static update_actor_t* g_update_actor = NULL;
 
 static void _signal_handler(int sig) {
+#ifndef _WIN32
   if (sig == SIGHUP && g_update_actor != NULL) {
     update_actor_check_now(g_update_actor);
     return;
   }
+#else
+  (void)sig;
+#endif
   if (g_node != NULL) {
     ATOMIC_STORE(&g_node->running, 0);
   }
@@ -329,7 +335,13 @@ static int _write_pid_file(const char* path) {
     return -1;
   }
 
-  fprintf(file, "%d\n", getpid());
+  fprintf(file, "%d\n",
+#ifdef _WIN32
+          platform_getpid()
+#else
+          getpid()
+#endif
+          );
   fclose(file);
   return 0;
 }
@@ -361,6 +373,11 @@ static void _free_args(offsd_args_t* args) {
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
 static int _daemonize(void) {
+#ifdef _WIN32
+  /* Windows services are managed by the SCM (service_windows.c); the daemon
+   * binary runs in the foreground under the service host. No fork/setsid. */
+  return 0;
+#else
   pid_t pid = fork();
   if (pid < 0) {
     fprintf(stderr, "First fork failed: %s\n", strerror(errno));
@@ -404,6 +421,7 @@ static int _daemonize(void) {
   }
 
   return 0;
+#endif
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -454,7 +472,7 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
   scheduler_pool_start(server->pool);
 
   /* Timer actor */
-  server->timer = timer_actor_create();
+  server->timer = timer_actor_create(server->pool);
 
   /* Configuration */
   server->config = config_default();
@@ -495,10 +513,14 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
 
   /* Start time tracking */
   {
+#ifdef _WIN32
+    server->start_time_ms = platform_monotonic_ns() / 1000000;
+#else
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     server->start_time_ms = (uint64_t)now.tv_sec * 1000
                           + (uint64_t)now.tv_nsec / 1000000;
+#endif
   }
   server->running_val = 1;
   server->draining_val = 0;
@@ -634,9 +656,18 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
       scheduler_pool_destroy(server->pool);
       return -1;
     }
+    /* Wire config management onto the local socket so `offs config show/set/
+       generate-auth/reload` reach the node + pending-config store. node is
+       borrowed (owned by server); data_dir is copied by the setter. */
+    unix_transport_set_config_ctx(server->unix_transport, &server->node,
+                                  args->data_dir);
   }
 
-  /* Update actor — auto-update checks */
+  /* Update actor — auto-update checks.
+   * The Update module (fork/execlp-based self-update) is excluded from liboffs
+   * on Windows, so the actor is only created on POSIX. On Windows the update
+   * status context stays disabled. */
+#ifndef _WIN32
   {
     update_check_config_t update_config;
     memset(&update_config, 0, sizeof(update_config));
@@ -673,6 +704,7 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
                                             &server->update_status_ctx);
     }
   }
+#endif
 
   return 0;
 }
@@ -757,10 +789,12 @@ static void _shutdown(offsd_server_t* server, const char* pid_file) {
   if (server->block_cache != NULL) {
     block_cache_destroy(server->block_cache);
   }
+#ifndef _WIN32
   if (server->update_actor != NULL) {
     update_actor_destroy(server->update_actor);
     g_update_actor = NULL;
   }
+#endif
   if (server->timer != NULL) {
     timer_actor_destroy(server->timer);
   }
@@ -846,8 +880,10 @@ int main(int argc, char** argv) {
   /* Register signal handlers — must be after node_obj is populated */
   g_node = &server.node;
   signal(SIGINT, _signal_handler);
+#ifndef _WIN32
   signal(SIGTERM, _signal_handler);
   signal(SIGHUP, _signal_handler);
+#endif
 
   /* Apply any pending config from a previous shutdown */
   _apply_pending_config(&server, args.data_dir);
@@ -862,7 +898,13 @@ int main(int argc, char** argv) {
 
   /* Main loop — wait until signal sets running=0 */
   while (ATOMIC_LOAD(&server.node.running)) {
+#ifdef _WIN32
+    /* Windows has no pause(); the console control handler (SIGINT) clears the
+     * running flag. Poll lightly so the loop observes the flag change. */
+    platform_sleep_ms(1000);
+#else
     pause();
+#endif
   }
 
   /* Graceful shutdown */

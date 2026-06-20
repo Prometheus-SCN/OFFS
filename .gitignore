@@ -4,3 +4,11 @@ cmake-build-*/
 .idea/
 *.swp
 *.swo
+
+# Test runtime artifacts (block caches, temp files, run logs, sockets).
+# The real test sources live in test/ (no trailing underscore), which the
+# test_*/ pattern does not match.
+test_*/
+*.log
+test_*.sock
+_testliboffs_run.log
