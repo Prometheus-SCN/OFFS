@@ -60,6 +60,14 @@
 static offs_node_t* g_node = NULL;
 static update_actor_t* g_update_actor = NULL;
 
+/* Set by the config reload handler (via _request_restart) to ask the main loop
+   to perform an in-process restart. The reload RPC runs on a scheduler-pool
+   worker, where offs_node_restart would self-deadlock (offs_node_stop waits for
+   / joins that same shared pool) and destroy the pool the transport still uses;
+   instead the worker just sets this flag and the main thread runs _shutdown +
+   _startup with the pending config applied. */
+static ATOMIC(uint8_t) g_restart_requested = 0;
+
 static void _signal_handler(int sig) {
 #ifndef _WIN32
   if (sig == SIGHUP && g_update_actor != NULL) {
@@ -72,6 +80,14 @@ static void _signal_handler(int sig) {
   if (g_node != NULL) {
     ATOMIC_STORE(&g_node->running, 0);
   }
+}
+
+/* Reload trigger wired into the unix/HTTP config handlers. Runs on a pool
+   worker thread; must not call offs_node_restart (self-deadlock + shared-pool
+   destruction). Just sets the flag — the main loop does the restart. */
+static void _request_restart(void* user_data) {
+  (void)user_data;
+  ATOMIC_STORE(&g_restart_requested, 1);
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -457,7 +473,8 @@ static void _init_health_context(offsd_server_t* server, block_cache_t* bc) {
   server->health_ctx.draining = &server->draining_val;
 }
 
-static int _startup(offsd_server_t* server, const offsd_args_t* args) {
+static int _startup(offsd_server_t* server, const offsd_args_t* args,
+                    config_t* override_config) {
   memset(server, 0, sizeof(*server));
 
   /* Thread setup */
@@ -467,6 +484,12 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
   server->pool = scheduler_pool_create(args->worker_count);
   if (server->pool == NULL) {
     fprintf(stderr, "Failed to create scheduler pool\n");
+    /* override_config is owned by the caller until _startup accepts it below;
+       free it on this early-failure path. */
+    if (override_config != NULL) {
+      config_free_members(override_config);
+      free(override_config);
+    }
     return -1;
   }
   scheduler_pool_start(server->pool);
@@ -474,8 +497,13 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
   /* Timer actor */
   server->timer = timer_actor_create(server->pool);
 
-  /* Configuration */
-  server->config = config_default();
+  /* Configuration: apply a pending-config override if supplied (reload path),
+     otherwise defaults. _startup takes ownership of override_config's members
+     (struct copy into the embedded server->config) and frees the shell. */
+  server->config = override_config ? *override_config : config_default();
+  if (override_config != NULL) {
+    free(override_config);
+  }
 
   /* Block cache */
   server->block_cache = block_cache_create(server->config,
@@ -631,7 +659,8 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
     peer_routes_register(server->http_server, &server->node,
                          &server->config, NULL);
     config_routes_register(server->http_server, &server->node,
-                           &server->config, args->data_dir);
+                           &server->config, args->data_dir,
+                           _request_restart, NULL);
   }
 
   /* Unix transport */
@@ -658,9 +687,11 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
     }
     /* Wire config management onto the local socket so `offs config show/set/
        generate-auth/reload` reach the node + pending-config store. node is
-       borrowed (owned by server); data_dir is copied by the setter. */
+       borrowed (owned by server); data_dir is copied by the setter. The restart
+       trigger hands `config reload` to the main loop instead of running
+       offs_node_restart on this pool worker. */
     unix_transport_set_config_ctx(server->unix_transport, &server->node,
-                                  args->data_dir);
+                                  args->data_dir, _request_restart, NULL);
   }
 
   /* Update actor — auto-update checks.
@@ -710,14 +741,23 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args) {
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- * Apply pending config (if any)
+ * Load pending config as an override for the next _startup (returns a heap
+ * config_t* the caller passes to _startup, or NULL if none/invalid). Marks the
+ * pending file applied so a subsequent reload re-stages it. Replaces the old
+ * _apply_pending_config, which ran offs_node_restart from the main thread after
+ * _startup had already created (but not started) the transport — destroying the
+ * shared server->pool and dangling transport->pool. Folding the pending config
+ * into the initial _startup avoids that.
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
-static void _apply_pending_config(offsd_server_t* server, const char* data_dir) {
-  if (data_dir == NULL) return;
-  if (config_pending_exists(data_dir) == 1) {
-    offs_node_restart(&server->node, data_dir);
+static config_t* _load_pending_override(const char* data_dir) {
+  if (data_dir == NULL) return NULL;
+  if (config_pending_exists(data_dir) != 1) return NULL;
+  config_t* cfg = config_pending_load(data_dir);
+  if (cfg != NULL) {
+    config_pending_mark_applied(data_dir);
   }
+  return cfg;
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -805,6 +845,14 @@ static void _shutdown(offsd_server_t* server, const char* pid_file) {
     authority_destroy(server->authority);
   }
 
+  /* Free the embedded config's owning char* members. server->config is an
+     embedded value (not heap), so config_free() must NOT be used here (it would
+     free() the surrounding struct). Subsystems above already copied/strdup'd
+     what they needed (authority cert paths, etc.), so these members are now
+     unreferenced. Also fixes a pre-existing shutdown leak and prevents leaks
+     across restart cycles. */
+  config_free_members(&server->config);
+
   /* Unlink PID file */
   _remove_pid_file(pid_file);
 
@@ -858,59 +906,74 @@ int main(int argc, char** argv) {
     printf("  PID file: %s\n", args.pid_file);
   }
 
-  /* Daemonize unless --foreground */
+  /* Daemonize unless --foreground (once — not per restart cycle) */
   if (!args.foreground) {
     if (_daemonize() != 0) {
       return 1;
     }
   }
 
-  /* Write PID file */
-  if (_write_pid_file(args.pid_file) != 0) {
-    return 1;
-  }
+  /* If a pending config was staged before this start, apply it as the initial
+     config (folded into the first _startup) instead of running offs_node_restart
+     after _startup — the old _apply_pending_config destroyed the shared pool the
+     transport had already borrowed. */
+  config_t* cfg = _load_pending_override(args.data_dir);
 
-  /* Startup */
   offsd_server_t server;
-  if (_startup(&server, &args) != 0) {
-    _remove_pid_file(args.pid_file);
-    return 1;
-  }
+  for (;;) {
+    /* Write PID file each cycle — _shutdown removes it on teardown. */
+    if (_write_pid_file(args.pid_file) != 0) {
+      if (cfg != NULL) { config_free_members(cfg); free(cfg); cfg = NULL; }
+      return 1;
+    }
 
-  /* Register signal handlers — must be after node_obj is populated */
-  g_node = &server.node;
-  signal(SIGINT, _signal_handler);
+    /* Startup — _startup consumes cfg (steals its members, frees the shell). */
+    if (_startup(&server, &args, cfg) != 0) {
+      cfg = NULL;  /* _startup freed it even on its failure paths */
+      _remove_pid_file(args.pid_file);
+      return 1;
+    }
+    cfg = NULL;
+
+    /* Register signal handlers — must be after the node is populated. */
+    g_node = &server.node;
+    signal(SIGINT, _signal_handler);
 #ifndef _WIN32
-  signal(SIGTERM, _signal_handler);
-  signal(SIGHUP, _signal_handler);
+    signal(SIGTERM, _signal_handler);
+    signal(SIGHUP, _signal_handler);
 #endif
 
-  /* Apply any pending config from a previous shutdown */
-  _apply_pending_config(&server, args.data_dir);
+    /* Apply metrics server URL from CLI/config file */
+    if (args.metrics_server_url != NULL) {
+      server.node.authority->metrics_server_url = (char*)args.metrics_server_url;
+    }
 
-  /* Apply metrics server URL from CLI/config file */
-  if (args.metrics_server_url != NULL) {
-    server.node.authority->metrics_server_url = (char*)args.metrics_server_url;
+    /* Start listening */
+    _start_listening(&server, args.host, args.port, args.unix_path);
+
+    /* Main loop — wait until a signal clears running (shutdown) or a reload
+       RPC sets g_restart_requested. Poll lightly (200 ms) so both flags are
+       observed on every platform; a signal interrupts the sleep early. */
+    while (ATOMIC_LOAD(&server.node.running) &&
+           !ATOMIC_LOAD(&g_restart_requested)) {
+      platform_sleep_ms(200);
+    }
+
+    /* Graceful shutdown — tears down every subsystem (including the shared
+       pool, which is safe here because this runs on the main thread, not a
+       pool worker). */
+    server.running_val = 0;
+    server.draining_val = 1;
+    _shutdown(&server, args.pid_file);
+
+    /* If a reload was requested, load the pending config and restart in-place;
+       otherwise this was a real shutdown. */
+    if (!ATOMIC_LOAD(&g_restart_requested)) {
+      break;
+    }
+    ATOMIC_STORE(&g_restart_requested, 0);
+    cfg = _load_pending_override(args.data_dir);
   }
-
-  /* Start listening */
-  _start_listening(&server, args.host, args.port, args.unix_path);
-
-  /* Main loop — wait until signal sets running=0 */
-  while (ATOMIC_LOAD(&server.node.running)) {
-#ifdef _WIN32
-    /* Windows has no pause(); the console control handler (SIGINT) clears the
-     * running flag. Poll lightly so the loop observes the flag change. */
-    platform_sleep_ms(1000);
-#else
-    pause();
-#endif
-  }
-
-  /* Graceful shutdown */
-  server.running_val = 0;
-  server.draining_val = 1;
-  _shutdown(&server, args.pid_file);
 
   _free_args(&args);
   return 0;
