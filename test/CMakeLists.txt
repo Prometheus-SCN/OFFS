@@ -15,13 +15,10 @@ if(BUILD_TESTING)
 
   file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS "test_*.cpp")
   list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_metrics_db.cpp")
-  # test_offsd_integration.cpp spawns offsd with fork()/execlp() and waits with
-  # waitpid()/kill() over an AF_UNIX socket — a POSIX-only lifecycle. Exclude it
-  # from the MSVC build rather than porting the process model; the POSIX path is
-  # preserved unchanged for non-WIN32 builds.
-  if(WIN32)
-    list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_offsd_integration.cpp")
-  endif()
+  # test_offsd_integration.cpp is cross-platform: it spawns offsd via fork()+execv()
+  # on POSIX and CreateProcessA() on Windows, and reaches it over the local IPC
+  # transport (AF_UNIX / named pipe) using cli_client_t. It is built on every
+  # platform, including MSVC.
 
   # cbor/poll-dancer are directory-scoped IMPORTED targets inside liboffs and
   # are not visible from this (sibling) scope, so link the archive paths that
