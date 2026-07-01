@@ -76,13 +76,17 @@ target_link_libraries(offsd PRIVATE blake3)
 target_link_libraries(offsd PRIVATE hashmap)
 target_link_libraries(offsd PRIVATE http-parser)
 target_link_libraries(offsd PRIVATE ${OFFS_CBOR_LIB})
-target_link_libraries(offsd PRIVATE ${OFFS_POLL_DANCER_LIB})
 target_link_libraries(offsd PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-# cbor and poll-dancer are directory-scoped IMPORTED targets inside the
-# liboffs subdirectory, so they are not visible here by name and we link
-# their archives via OFFS_CBOR_LIB/OFFS_POLL_DANCER_LIB path strings above.
-# offs_cbor_archive gives ninja a producing rule for the cbor.lib path input;
-# poll-dancer's byproduct reaches these targets transitively via offs.
+# cbor is a directory-scoped IMPORTED target inside the liboffs subdirectory,
+# so it is not visible here by name and we link its archive via the
+# OFFS_CBOR_LIB path string above. offs_cbor_archive gives ninja a producing
+# rule for the cbor.lib path input.
+# poll-dancer is also directory-scoped inside liboffs, but offs PUBLIC-links
+# it (liboffs CMakeLists.txt:209), so it reaches offsd transitively — no
+# explicit link needed here. (Previously OFFS_POLL_DANCER_LIB was linked
+# explicitly, but that pulled in a second copy of libpoll_dancer.a from
+# deps/poll-dancer/build/ alongside the one offs already transits, causing
+# duplicate pd_watcher_* symbol errors at link time.)
 add_dependencies(offsd offs_cbor_archive)
 if(NOT WIN32)
   target_link_libraries(offsd PRIVATE pthread)
