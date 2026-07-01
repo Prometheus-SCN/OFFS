@@ -45,6 +45,7 @@
 #define L10N_PUT_EMPTY_FILE         "Error: empty file"
 #define L10N_PUT_INVALID_PATH       "Error: invalid file path"
 #define L10N_GET_USAGE              "Usage: offs get <ori> [--output <path>]"
+#define L10N_GET_ENCODE_REQUEST     "Error: failed to encode GET_REQUEST frame"
 #define L10N_BLOCK_PUT_USAGE        "Usage: offs block put <data> [--encoding base58|raw]"
 #define L10N_BLOCK_GET_USAGE        "Usage: offs block get <hash>"
 #define L10N_BLOCK_DELETE_USAGE     "Usage: offs block delete <hash>"

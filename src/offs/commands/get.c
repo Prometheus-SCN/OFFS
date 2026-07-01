@@ -35,7 +35,7 @@ int cmd_get(int argc, char** argv, cli_client_t* client) {
 
   cbor_item_t* request = client_api_get_request_encode(&get_req);
   if (request == NULL) {
-    fprintf(stderr, "Error: failed to encode GET_REQUEST frame\n");
+    fprintf(stderr, L10N_GET_ENCODE_REQUEST "\n");
     return 1;
   }
   int send_rc = cli_client_send_frame(client, request);
