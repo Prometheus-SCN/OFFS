@@ -60,7 +60,7 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
   }
   size_t file_size = (size_t)file_size_l;
   if (file_size == 0) {
-    fprintf(stderr, "Error: empty file\n");
+    fprintf(stderr, L10N_PUT_EMPTY_FILE "\n");
     fclose(file);
     return 1;
   }
@@ -69,12 +69,17 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
    * file_name is the metadata stored in the ORI and the server rejects
    * '/' in file_name (validate_file_name), so use the basename. */
   const char* base_name = file_path;
-  const char* last_slash = strrchr(file_path, '/');
-  if (last_slash != NULL) {
-    base_name = last_slash + 1;
+  const char* last_sep = NULL;
+  for (const char* p = file_path; *p != '\0'; p++) {
+    if (*p == '/' || *p == '\\') {
+      last_sep = p;
+    }
+  }
+  if (last_sep != NULL) {
+    base_name = last_sep + 1;
   }
   if (base_name[0] == '\0') {
-    fprintf(stderr, "Error: invalid file path\n");
+    fprintf(stderr, L10N_PUT_INVALID_PATH "\n");
     fclose(file);
     return 1;
   }
@@ -96,14 +101,14 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
 
   cbor_item_t* start_frame = client_api_put_request_encode(&put_req);
   if (start_frame == NULL) {
-    fprintf(stderr, "Error: failed to encode PUT_START frame\n");
+    fprintf(stderr, L10N_PUT_ENCODE_START "\n");
     fclose(file);
     return 1;
   }
   int send_rc = cli_client_send_frame(client, start_frame);
   cbor_decref(&start_frame);
   if (send_rc != 0) {
-    fprintf(stderr, "Error: failed to send PUT_START frame: %s\n", strerror(errno));
+    fprintf(stderr, L10N_PUT_SEND_START "\n", strerror(errno));
     fclose(file);
     return 1;
   }
@@ -111,7 +116,7 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
   /* Stream PUT_DATA frames */
   uint8_t* chunk = (uint8_t*)get_memory(PUT_CHUNK_SIZE);
   if (chunk == NULL) {
-    fprintf(stderr, "Error: failed to allocate chunk buffer\n");
+    fprintf(stderr, L10N_PUT_ALLOC_CHUNK "\n");
     fclose(file);
     return 1;
   }
@@ -141,21 +146,21 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
 
     cbor_item_t* data_frame = client_api_put_data_encode(&data_msg);
     if (data_frame == NULL) {
-      fprintf(stderr, "Error: failed to encode PUT_DATA frame\n");
+      fprintf(stderr, L10N_PUT_ENCODE_DATA "\n");
       had_error = 1;
       break;
     }
     send_rc = cli_client_send_frame(client, data_frame);
     cbor_decref(&data_frame);
     if (send_rc != 0) {
-      fprintf(stderr, "Error: failed to send PUT_DATA frame: %s\n", strerror(errno));
+      fprintf(stderr, L10N_PUT_SEND_DATA "\n", strerror(errno));
       had_error = 1;
       break;
     }
 
     bytes_sent += n;
     if (progress_to_stderr) {
-      double pct = file_size > 0 ? (100.0 * (double)bytes_sent / (double)file_size) : 100.0;
+      double pct = 100.0 * (double)bytes_sent / (double)file_size;
       fprintf(stderr, "\rPutting %s: %zu/%zu bytes (%.1f%%)",
               file_path, bytes_sent, file_size, pct);
       fflush(stderr);
@@ -176,20 +181,20 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
   /* Send PUT_END frame */
   cbor_item_t* end_frame = client_api_put_end_encode();
   if (end_frame == NULL) {
-    fprintf(stderr, "Error: failed to encode PUT_END frame\n");
+    fprintf(stderr, L10N_PUT_ENCODE_END "\n");
     return 1;
   }
   send_rc = cli_client_send_frame(client, end_frame);
   cbor_decref(&end_frame);
   if (send_rc != 0) {
-    fprintf(stderr, "Error: failed to send PUT_END frame: %s\n", strerror(errno));
+    fprintf(stderr, L10N_PUT_SEND_END "\n", strerror(errno));
     return 1;
   }
 
   /* Read the PUT_RESPONSE (or ERROR) frame from the server */
   cbor_item_t* response = cli_client_recv_frame(client);
   if (response == NULL) {
-    fprintf(stderr, "Error: daemon closed connection without responding\n");
+    fprintf(stderr, L10N_PUT_NO_RESPONSE "\n");
     return 1;
   }
 
@@ -203,7 +208,7 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
       client_api_put_response_destroy(&put_resp);
       result = 0;
     } else {
-      fprintf(stderr, "Error: failed to decode PUT_RESPONSE\n");
+      fprintf(stderr, L10N_PUT_DECODE_RESPONSE "\n");
     }
   } else if (type == CLIENT_API_ERROR) {
     client_api_error_t err_msg;
@@ -212,10 +217,10 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
       fprintf(stderr, "%s: %s\n", L10N_ERROR, err_msg.message);
       client_api_error_destroy(&err_msg);
     } else {
-      fprintf(stderr, "Error: undecodable error frame\n");
+      fprintf(stderr, L10N_PUT_UNDECODABLE_ERR "\n");
     }
   } else {
-    fprintf(stderr, "Error: unexpected response type %u\n", type);
+    fprintf(stderr, L10N_PUT_UNEXPECTED_TYPE "\n", type);
   }
 
   cbor_decref(&response);
