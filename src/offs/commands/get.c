@@ -34,9 +34,18 @@ int cmd_get(int argc, char** argv, cli_client_t* client) {
   get_req.has_range = 0;
 
   cbor_item_t* request = client_api_get_request_encode(&get_req);
-  cbor_item_t* response = cli_client_send(client, request);
+  if (request == NULL) {
+    fprintf(stderr, "Error: failed to encode GET_REQUEST frame\n");
+    return 1;
+  }
+  int send_rc = cli_client_send_frame(client, request);
   cbor_decref(&request);
+  if (send_rc != 0) {
+    fprintf(stderr, "%s\n", L10N_DAEMON_UNREACHABLE);
+    return 1;
+  }
 
+  cbor_item_t* response = cli_client_recv_frame(client);
   if (response == NULL) {
     fprintf(stderr, "%s\n", L10N_DAEMON_UNREACHABLE);
     return 1;
@@ -65,7 +74,7 @@ int cmd_get(int argc, char** argv, cli_client_t* client) {
   if (output == NULL) { perror("fopen"); return 1; }
 
   /* Read data frames until GET_END */
-  while ((response = cli_client_send(client, NULL)) != NULL) {
+  while ((response = cli_client_recv_frame(client)) != NULL) {
     type = client_api_wire_get_type(response);
     if (type == CLIENT_API_GET_DATA) {
       client_api_get_data_t get_data;
