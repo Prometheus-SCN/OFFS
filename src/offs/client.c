@@ -133,38 +133,41 @@ void cli_client_disconnect(cli_client_t* client) {
   client->connected = 0;
 }
 
-cbor_item_t* cli_client_send(cli_client_t* client, cbor_item_t* request) {
-  if (client == NULL || !client->connected || request == NULL || client->socket == NULL) {
-    return NULL;
+int cli_client_send_frame(cli_client_t* client, cbor_item_t* frame) {
+  if (client == NULL || !client->connected || frame == NULL || client->socket == NULL) {
+    return -1;
   }
 
-  /* Serialize CBOR request to bytes */
   unsigned char* cbor_buf = NULL;
   size_t cbor_len = 0;
-  cbor_len = cbor_serialize_alloc(request, &cbor_buf, &cbor_len);
+  cbor_len = cbor_serialize_alloc(frame, &cbor_buf, &cbor_len);
   if (cbor_buf == NULL || cbor_len == 0) {
     free(cbor_buf);
-    return NULL;
+    return -1;
   }
 
-  /* Frame: 4-byte big-endian length prefix + CBOR data */
   size_t framed_len = 0;
   uint8_t* framed = stream_frame_encode(cbor_buf, cbor_len, &framed_len);
   free(cbor_buf);
 
   if (framed == NULL || framed_len == 0) {
     free(framed);
-    return NULL;
+    return -1;
   }
 
-  /* Send the framed data */
   if (_send_all(client->socket, framed, framed_len) != 0) {
     free(framed);
-    return NULL;
+    return -1;
   }
   free(framed);
+  return 0;
+}
 
-  /* Read response: 4-byte big-endian length prefix */
+cbor_item_t* cli_client_recv_frame(cli_client_t* client) {
+  if (client == NULL || !client->connected || client->socket == NULL) {
+    return NULL;
+  }
+
   uint8_t length_buf[4];
   if (_recv_all(client->socket, length_buf, sizeof(length_buf)) != 0) {
     return NULL;
@@ -175,19 +178,19 @@ cbor_item_t* cli_client_send(cli_client_t* client, cbor_item_t* request) {
                           ((uint32_t)length_buf[2] << 8) |
                           (uint32_t)length_buf[3];
 
-  /* Sanity check */
   if (response_len == 0 || response_len > MAX_RESPONSE_SIZE) {
     return NULL;
   }
 
-  /* Read the CBOR payload */
   uint8_t* response_data = get_memory(response_len);
+  if (response_data == NULL) {
+    return NULL;
+  }
   if (_recv_all(client->socket, response_data, response_len) != 0) {
     free(response_data);
     return NULL;
   }
 
-  /* Parse CBOR */
   struct cbor_load_result load_result;
   cbor_item_t* response = cbor_load(response_data, response_len, &load_result);
   free(response_data);
@@ -200,4 +203,14 @@ cbor_item_t* cli_client_send(cli_client_t* client, cbor_item_t* request) {
   }
 
   return response;
+}
+
+cbor_item_t* cli_client_send(cli_client_t* client, cbor_item_t* request) {
+  if (client == NULL || !client->connected || request == NULL || client->socket == NULL) {
+    return NULL;
+  }
+  if (cli_client_send_frame(client, request) != 0) {
+    return NULL;
+  }
+  return cli_client_recv_frame(client);
 }
