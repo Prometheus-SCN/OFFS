@@ -24,12 +24,23 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
   const char* file_path = argv[0];
   uint8_t temporary = 0;
   char* recycler_url = NULL;
+  uint8_t has_tuple_size = 0;
+  size_t tuple_size = 3;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--temporary") == 0) {
       temporary = 1;
     } else if (strcmp(argv[i], "--recycler") == 0 && i + 1 < argc) {
       recycler_url = argv[++i];
+    } else if (strcmp(argv[i], "--tuple-size") == 0 && i + 1 < argc) {
+      char* endptr = NULL;
+      long parsed_tuple_size = strtol(argv[++i], &endptr, 10);
+      if (*endptr != '\0' || parsed_tuple_size <= 0) {
+        fprintf(stderr, "%s\n", L10N_PUT_TUPLE_SIZE_RANGE);
+        return 1;
+      }
+      tuple_size = (size_t)parsed_tuple_size;
+      has_tuple_size = 1;
     } else if (strcmp(argv[i], "--help") == 0) {
       printf("%s\n", L10N_PUT_USAGE);
       return 0;
@@ -92,6 +103,8 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
   put_req.data = NULL;
   put_req.data_size = 0;
   put_req.temporary = temporary;
+  put_req.has_tuple_size = has_tuple_size;
+  put_req.tuple_size = tuple_size;
 
   char* recycler_arr[1] = {recycler_url};
   if (recycler_url != NULL) {
