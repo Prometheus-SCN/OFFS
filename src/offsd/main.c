@@ -279,22 +279,36 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
  * CLI argument parsing
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
+/* Replace *field with a strdup'd copy of value, freeing the previous content.
+ * Returns 0 on success, -1 on allocation failure (field left NULL). */
+static int _arg_string_set(char** field, const char* value) {
+  char* copy = strdup(value);
+  if (copy == NULL) {
+    free(*field);
+    *field = NULL;
+    return -1;
+  }
+  free(*field);
+  *field = copy;
+  return 0;
+}
+
 static int _parse_args(int argc, char** argv, offsd_args_t* args) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
       args->config_path = argv[++i];
     } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
-      args->host = argv[++i];
+      if (_arg_string_set(&args->host, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
       args->port = (uint16_t)atoi(argv[++i]);
     } else if (strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
-      args->unix_path = argv[++i];
+      if (_arg_string_set(&args->unix_path, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--cache-dir") == 0 && i + 1 < argc) {
-      args->cache_dir = argv[++i];
+      if (_arg_string_set(&args->cache_dir, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc) {
-      args->data_dir = argv[++i];
+      if (_arg_string_set(&args->data_dir, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--pid-file") == 0 && i + 1 < argc) {
-      args->pid_file = argv[++i];
+      if (_arg_string_set(&args->pid_file, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--workers") == 0 && i + 1 < argc) {
       args->worker_count = atoi(argv[++i]);
       if (args->worker_count < 0) args->worker_count = 0;
@@ -305,13 +319,13 @@ static int _parse_args(int argc, char** argv, offsd_args_t* args) {
     } else if (strcmp(argv[i], "--log-structured") == 0) {
       args->log_structured = 1;
     } else if (strcmp(argv[i], "--metrics-server") == 0 && i + 1 < argc) {
-      args->metrics_server_url = argv[++i];
+      if (_arg_string_set(&args->metrics_server_url, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--ca-cert") == 0 && i + 1 < argc) {
-      args->ca_cert_path = argv[++i];
+      if (_arg_string_set(&args->ca_cert_path, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--node-cert") == 0 && i + 1 < argc) {
-      args->node_cert_path = argv[++i];
+      if (_arg_string_set(&args->node_cert_path, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--node-key") == 0 && i + 1 < argc) {
-      args->node_key_path = argv[++i];
+      if (_arg_string_set(&args->node_key_path, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--help") == 0) {
       _print_usage(argv[0]);
       return 1;
@@ -373,15 +387,15 @@ static void _remove_pid_file(const char* path) {
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
 static void _free_args(offsd_args_t* args) {
-  if (args->data_dir != NULL)    free((void*)args->data_dir);
-  if (args->pid_file != NULL)    free((void*)args->pid_file);
-  if (args->host != NULL)        free((void*)args->host);
-  if (args->unix_path != NULL)   free((void*)args->unix_path);
-  if (args->cache_dir != NULL)    free((void*)args->cache_dir);
-  if (args->metrics_server_url != NULL) free((void*)args->metrics_server_url);
-  if (args->ca_cert_path != NULL)     free((void*)args->ca_cert_path);
-  if (args->node_cert_path != NULL)   free((void*)args->node_cert_path);
-  if (args->node_key_path != NULL)    free((void*)args->node_key_path);
+  free((void*)args->data_dir);
+  free((void*)args->pid_file);
+  free((void*)args->host);
+  free((void*)args->unix_path);
+  free((void*)args->cache_dir);
+  free((void*)args->metrics_server_url);
+  free((void*)args->ca_cert_path);
+  free((void*)args->node_cert_path);
+  free((void*)args->node_key_path);
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -864,13 +878,19 @@ static void _shutdown(offsd_server_t* server, const char* pid_file) {
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
 int main(int argc, char** argv) {
-  /* Default arguments */
+  /* Default arguments — string fields are heap-allocated so _free_args can
+   * free them uniformly. _arg_string_set frees the prior (NULL after memset)
+   * value and strdups the new one. */
   offsd_args_t args;
   memset(&args, 0, sizeof(args));
-  args.host = "0.0.0.0";
+  if (_arg_string_set(&args.host, "0.0.0.0") != 0 ||
+      _arg_string_set(&args.cache_dir, "./offs_cache") != 0 ||
+      _arg_string_set(&args.data_dir, ".") != 0) {
+    fprintf(stderr, "Error: allocation failure during startup\n");
+    _free_args(&args);
+    return 1;
+  }
   args.port = 23402;
-  args.cache_dir = "./offs_cache";
-  args.data_dir = ".";
   args.worker_count = 0;
   args.foreground = 0;
 
