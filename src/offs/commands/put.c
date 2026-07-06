@@ -6,6 +6,13 @@
 #include "../l10n/en.h"
 #include "ClientAPI/client_api_wire.h"
 #include "Util/allocator.h"
+
+/* Forward-declare mime_type_from_extension (defined in liboffs's HTTP layer,
+ * linked via the offs target) to avoid pulling HTTP parser headers into the CLI.
+ * Detects the MIME type from the file extension so the stored ORI carries the
+ * right content type (e.g. video/mp4 for .mp4) and browsers play it inline
+ * instead of downloading as application/octet-stream. */
+const char* mime_type_from_extension(const char* filename);
 #include <cbor.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,7 +104,7 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
 
   client_api_put_request_t put_req;
   memset(&put_req, 0, sizeof(put_req));
-  put_req.content_type = (char*)"application/octet-stream";
+  put_req.content_type = (char*)mime_type_from_extension(base_name);
   put_req.file_name = (char*)base_name;
   put_req.stream_length = file_size;
   put_req.data = NULL;
