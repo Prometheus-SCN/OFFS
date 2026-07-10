@@ -179,7 +179,76 @@ static int _read_running_offsd_args(char*** out_argv) {
 }
 #endif
 
+/* Service-manager detection and restart.
+ *
+ * On each platform we check whether the daemon is running as a managed
+ * service and, if so, restart it through the native service manager so it
+ * retains control (cgroup/PID tracking, auto-restart policy). If the daemon
+ * is NOT service-managed (dev mode, started manually), cmd_restart falls
+ * through to the manual stop+fork+exec path that preserves start flags.
+ *
+ *   Linux  → systemd (systemctl)
+ *   macOS  → launchd (launchctl)
+ *   Windows → SCM (sc) — already handled by the #ifdef _WIN32 path in
+ *             cmd_stop/cmd_start, which uses `sc stop`/`sc start` through
+ *             the SCM, so the manual path IS the service-manager path there.
+ */
+
+#if defined(__linux__)
+static int _is_service_managed(void) {
+  return (system("systemctl is-active --quiet offs-daemon 2>/dev/null") == 0) ? 1 : 0;
+}
+static int _service_restart(void) {
+  int result = system("systemctl restart offs-daemon 2>&1");
+  if (result == 0) { printf("Daemon restarted via systemctl\n"); return 0; }
+  if (geteuid() != 0) {
+    fprintf(stderr, "Permission denied. Run: sudo systemctl restart offs-daemon\n");
+  } else {
+    fprintf(stderr, "systemctl restart offs-daemon failed\n");
+  }
+  return 1;
+}
+#elif defined(__APPLE__)
+static int _is_service_managed(void) {
+  /* launchctl list exits 0 if the label is loaded. */
+  return (system("launchctl list offs-daemon >/dev/null 2>&1") == 0) ? 1 : 0;
+}
+static int _service_restart(void) {
+  /* kickstart -k kills and restarts the job in one step (macOS 10.10+). */
+  int result = system("launchctl kickstart -k system/offs-daemon 2>&1");
+  if (result == 0) { printf("Daemon restarted via launchctl\n"); return 0; }
+  if (geteuid() != 0) {
+    fprintf(stderr, "Permission denied. Run: sudo launchctl kickstart -k system/offs-daemon\n");
+  } else {
+    fprintf(stderr, "launchctl kickstart offs-daemon failed\n");
+  }
+  return 1;
+}
+#elif defined(_WIN32)
+static int _is_service_managed(void) {
+  return (system("sc query offs-daemon > nul 2>&1") == 0) ? 1 : 0;
+}
+static int _service_restart(void) {
+  /* sc has no single restart verb; stop+start through the SCM retains control. */
+  int result = system("sc stop offs-daemon > nul 2>&1 && sc start offs-daemon > nul 2>&1");
+  if (result == 0) { printf("Daemon restarted via sc\n"); return 0; }
+  fprintf(stderr, "sc restart offs-daemon failed (run from an elevated shell)\n");
+  return 1;
+}
+#else
+static int _is_service_managed(void) { return 0; }
+static int _service_restart(void) { return 1; }
+#endif
+
 int cmd_restart(int argc, char** argv, cli_client_t* client) {
+  /* If the daemon is running as a managed service, restart through the native
+   * service manager so it retains control of the new process (cgroup/PID
+   * tracking, auto-restart policy). The manual fork+exec path below would
+   * start the new daemon outside the service manager's tree, breaking that
+   * control and potentially racing with the manager's own auto-restart. */
+  if (_is_service_managed()) {
+    return _service_restart();
+  }
   /* If the user passed flags to restart (e.g. "offs restart --foreground"),
    * honor them. Otherwise, read the running daemon's start flags from
    * /proc/<pid>/cmdline so the restart preserves the original foreground
