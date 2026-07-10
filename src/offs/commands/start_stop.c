@@ -252,7 +252,12 @@ int cmd_restart(int argc, char** argv, cli_client_t* client) {
   /* If the user passed flags to restart (e.g. "offs restart --foreground"),
    * honor them. Otherwise, read the running daemon's start flags from
    * /proc/<pid>/cmdline so the restart preserves the original foreground
-   * mode, socket path, cache/data dirs, port, and config path. */
+   * mode, socket path, cache/data dirs, port, and config path.
+   *
+   * Strip --foreground from the preserved flags so the restarted daemon
+   * daemonizes to the background — otherwise it would eat the terminal of
+   * whichever offs restart was called from. (If the user explicitly passes
+   * --foreground to "offs restart", cmd_start forwards it as-is.) */
   int start_argc = argc;
   char** start_argv = argv;
   char** preserved_argv = NULL;
@@ -260,7 +265,16 @@ int cmd_restart(int argc, char** argv, cli_client_t* client) {
   if (argc == 0) {
     int preserved_count = _read_running_offsd_args(&preserved_argv);
     if (preserved_count > 0) {
-      start_argc = preserved_count;
+      int kept = 0;
+      for (int i = 0; i < preserved_count; i++) {
+        if (strcmp(preserved_argv[i], "--foreground") == 0) {
+          free(preserved_argv[i]);
+          preserved_argv[i] = NULL;
+        } else {
+          preserved_argv[kept++] = preserved_argv[i];
+        }
+      }
+      start_argc = kept;
       start_argv = preserved_argv;
     }
   }
