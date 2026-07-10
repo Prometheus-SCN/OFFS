@@ -20,26 +20,20 @@
 
 int cmd_start(int argc, char** argv, cli_client_t* client) {
   (void)client;
-  const char* config_path = NULL;
-  int foreground = 0;
 
   for (int i = 0; i < argc; i++) {
-    if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-      config_path = argv[++i];
-    } else if (strcmp(argv[i], "--foreground") == 0) {
-      foreground = 1;
-    } else if (strcmp(argv[i], "--help") == 0) {
-      printf("Usage: offs start [--config <path>] [--foreground]\n");
+    if (strcmp(argv[i], "--help") == 0) {
+      printf("Usage: offs start [offsd flags ...]\n"
+             "  Forwards all flags to offsd (e.g. --foreground, --unix <path>,\n"
+             "  --cache-dir <dir>, --data-dir <dir>, --port <n>, --config <path>).\n");
       return 0;
     }
   }
 
 #ifdef _WIN32
-  /* Windows daemon is managed by the Service Control Manager. Config/foreground
-   * flags are not applicable to a service start; they are accepted but ignored
-   * to keep the CLI surface consistent across platforms. */
-  (void)config_path;
-  (void)foreground;
+  /* Windows daemon is managed by the Service Control Manager. Flags are not
+   * applicable to a service start; accepted but ignored to keep the CLI surface
+   * consistent across platforms. */
   int result = system("sc start offs-daemon > nul 2>&1");
   if (result != 0) {
     fprintf(stderr, "Failed to start daemon service\n");
@@ -51,14 +45,18 @@ int cmd_start(int argc, char** argv, cli_client_t* client) {
   pid_t pid = fork();
   if (pid < 0) { perror("fork"); return 1; }
   if (pid == 0) {
-    /* Child: exec offsd. Try the same directory as the offs binary first
-     * (derives the path from /proc/self/exe so it works when offs is run
-     * as ./build-release/offs, not on PATH), then fall back to PATH search. */
-    char* offsd_args[10];
+    /* Child: exec offsd. Forward every flag from argv to offsd so the daemon
+     * starts with the same options the user specified. Try the same directory
+     * as the offs binary first (derives the path from /proc/self/exe so it
+     * works when offs is run as ./build-release/offs, not on PATH), then fall
+     * back to PATH search. */
+    char** offsd_args = (char**)malloc(sizeof(char*) * (argc + 2));
+    if (offsd_args == NULL) { perror("malloc"); _exit(1); }
     int arg_count = 0;
     offsd_args[arg_count++] = (char*)"offsd";
-    if (config_path != NULL) { offsd_args[arg_count++] = (char*)"--config"; offsd_args[arg_count++] = (char*)config_path; }
-    if (foreground) { offsd_args[arg_count++] = (char*)"--foreground"; }
+    for (int i = 0; i < argc; i++) {
+      offsd_args[arg_count++] = argv[i];
+    }
     offsd_args[arg_count] = NULL;
 
     char exe_path[PATH_MAX];
@@ -126,9 +124,88 @@ int cmd_stop(int argc, char** argv, cli_client_t* client) {
   return 0;
 }
 
+/* Read the running offsd's command-line args from /proc/<pid>/cmdline so the
+ * restart preserves the original start flags (foreground, unix socket, cache
+ * dir, data dir, port, config path, etc.). Returns the number of args read
+ * (excluding argv[0]) into out_argv (caller frees), or 0 if none could be read. */
+#ifndef _WIN32
+static int _read_running_offsd_args(char*** out_argv) {
+  /* Find the offsd PID via pgrep. */
+  FILE* pgrep = popen("pgrep -x offsd 2>/dev/null", "r");
+  if (pgrep == NULL) { *out_argv = NULL; return 0; }
+  long pid = 0;
+  if (fscanf(pgrep, "%ld", &pid) != 1) { pclose(pgrep); *out_argv = NULL; return 0; }
+  pclose(pgrep);
+  if (pid <= 0) { *out_argv = NULL; return 0; }
+
+  /* Read /proc/<pid>/cmdline (null-separated args). */
+  char cmdline_path[64];
+  snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%ld/cmdline", pid);
+  FILE* cmdfile = fopen(cmdline_path, "rb");
+  if (cmdfile == NULL) { *out_argv = NULL; return 0; }
+  char buf[4096];
+  size_t total = fread(buf, 1, sizeof(buf) - 1, cmdfile);
+  fclose(cmdfile);
+  if (total == 0) { *out_argv = NULL; return 0; }
+  if (buf[total - 1] != '\0') buf[total] = '\0';  /* ensure final NUL */
+
+  /* Split on NUL. argv[0] is the offsd path — skip it. */
+  int count = 0;
+  size_t pos = 0;
+  while (pos < total) {
+    size_t arg_len = strlen(buf + pos);
+    if (arg_len == 0) break;
+    count++;
+    pos += arg_len + 1;
+  }
+  if (count <= 1) { *out_argv = NULL; return 0; }  /* only argv[0], no flags */
+
+  char** args = (char**)malloc(sizeof(char*) * count);
+  if (args == NULL) { *out_argv = NULL; return 0; }
+  int idx = 0;
+  pos = 0;
+  int skip_first = 1;
+  while (pos < total && idx < count - 1) {
+    size_t arg_len = strlen(buf + pos);
+    if (arg_len == 0) break;
+    if (!skip_first) {
+      args[idx++] = strdup(buf + pos);
+    }
+    skip_first = 0;
+    pos += arg_len + 1;
+  }
+  *out_argv = args;
+  return idx;
+}
+#endif
+
 int cmd_restart(int argc, char** argv, cli_client_t* client) {
+  /* If the user passed flags to restart (e.g. "offs restart --foreground"),
+   * honor them. Otherwise, read the running daemon's start flags from
+   * /proc/<pid>/cmdline so the restart preserves the original foreground
+   * mode, socket path, cache/data dirs, port, and config path. */
+  int start_argc = argc;
+  char** start_argv = argv;
+  char** preserved_argv = NULL;
+#ifndef _WIN32
+  if (argc == 0) {
+    int preserved_count = _read_running_offsd_args(&preserved_argv);
+    if (preserved_count > 0) {
+      start_argc = preserved_count;
+      start_argv = preserved_argv;
+    }
+  }
+#endif
   int ret = cmd_stop(0, NULL, client);
-  if (ret != 0) return ret;
+  if (ret != 0) {
+    if (preserved_argv != NULL) { for (int i = 0; i < start_argc; i++) free(preserved_argv[i]); free(preserved_argv); }
+    return ret;
+  }
   platform_sleep_ms(1000); /* Give daemon time to release the socket/pipe */
-  return cmd_start(argc, argv, NULL);
+  int start_ret = cmd_start(start_argc, start_argv, NULL);
+  if (preserved_argv != NULL) {
+    for (int i = 0; i < start_argc; i++) free(preserved_argv[i]);
+    free(preserved_argv);
+  }
+  return start_ret;
 }
