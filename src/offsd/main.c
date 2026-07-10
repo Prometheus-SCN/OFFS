@@ -36,6 +36,7 @@
 #include "ClientAPI/update_status_handler.h"
 #include "Util/allocator.h"
 #include "Util/log.h"
+#include "Util/mkdir_p.h"
 #include <cJSON.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -490,6 +491,28 @@ static void _init_health_context(offsd_server_t* server, block_cache_t* bc) {
 static int _startup(offsd_server_t* server, const offsd_args_t* args,
                     config_t* override_config) {
   memset(server, 0, sizeof(*server));
+
+  /* Ensure cache and data directories exist before subsystems use them.
+   * config_pending_save writes to {data_dir}/pending_config.json; the block
+   * cache writes section files under {cache_dir}. Without this, a missing
+   * data_dir surfaces as a cryptic "failed to write pending config" on the
+   * first config set, and a missing cache_dir fails block_cache_create. */
+  if (args->cache_dir != NULL && mkdir_p((char*)args->cache_dir) != 0) {
+    fprintf(stderr, "Failed to create cache directory: %s\n", args->cache_dir);
+    if (override_config != NULL) {
+      config_free_members(override_config);
+      free(override_config);
+    }
+    return -1;
+  }
+  if (args->data_dir != NULL && mkdir_p((char*)args->data_dir) != 0) {
+    fprintf(stderr, "Failed to create data directory: %s\n", args->data_dir);
+    if (override_config != NULL) {
+      config_free_members(override_config);
+      free(override_config);
+    }
+    return -1;
+  }
 
   /* Thread setup */
   platform_thread_setup_stack();
