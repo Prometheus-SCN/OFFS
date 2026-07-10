@@ -13,6 +13,9 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#include <libgen.h>
+#include <limits.h>
+#include <sys/stat.h>
 #endif
 
 int cmd_start(int argc, char** argv, cli_client_t* client) {
@@ -48,13 +51,36 @@ int cmd_start(int argc, char** argv, cli_client_t* client) {
   pid_t pid = fork();
   if (pid < 0) { perror("fork"); return 1; }
   if (pid == 0) {
-    /* Child: exec offsd */
+    /* Child: exec offsd. Try the same directory as the offs binary first
+     * (derives the path from /proc/self/exe so it works when offs is run
+     * as ./build-release/offs, not on PATH), then fall back to PATH search. */
     char* offsd_args[10];
     int arg_count = 0;
     offsd_args[arg_count++] = (char*)"offsd";
     if (config_path != NULL) { offsd_args[arg_count++] = (char*)"--config"; offsd_args[arg_count++] = (char*)config_path; }
     if (foreground) { offsd_args[arg_count++] = (char*)"--foreground"; }
     offsd_args[arg_count] = NULL;
+
+    char exe_path[PATH_MAX];
+    ssize_t link_len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (link_len > 0) {
+      exe_path[link_len] = '\0';
+      char* exe_dir = dirname(exe_path);
+      size_t dir_len = strlen(exe_dir);
+      char* offsd_abs = (char*)malloc(dir_len + 7);  /* "/" + "offsd" + '\0' */
+      if (offsd_abs != NULL) {
+        snprintf(offsd_abs, dir_len + 7, "%s/offsd", exe_dir);
+        struct stat file_info;
+        if (stat(offsd_abs, &file_info) == 0 && S_ISREG(file_info.st_mode) &&
+            (file_info.st_mode & 0111) != 0) {
+          offsd_args[0] = offsd_abs;
+          execv(offsd_abs, offsd_args);
+          /* If execv returns, fall through to PATH search */
+        }
+        free(offsd_abs);
+      }
+    }
+
     execvp("offsd", offsd_args);
     perror("execvp offsd");
     _exit(1);
