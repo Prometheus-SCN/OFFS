@@ -44,10 +44,16 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  /* start/restart/version spawn or print info and don't need a socket connection */
+  /* start/restart/version spawn or print info and don't need a socket connection.
+   * config help/--help is pure client-side (prints the field reference) and
+   * should work without a running daemon. */
   int needs_client = 1;
   if (strcmp(command_name, "start") == 0 || strcmp(command_name, "restart") == 0 ||
       strcmp(command_name, "version") == 0) {
+    needs_client = 0;
+  } else if (strcmp(command_name, "config") == 0 && argc > arg_offset + 1 &&
+             (strcmp(argv[arg_offset + 1], "help") == 0 ||
+              strcmp(argv[arg_offset + 1], "--help") == 0)) {
     needs_client = 0;
   }
 
