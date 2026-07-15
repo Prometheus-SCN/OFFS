@@ -55,6 +55,9 @@ int main(int argc, char** argv) {
              (strcmp(argv[arg_offset + 1], "help") == 0 ||
               strcmp(argv[arg_offset + 1], "--help") == 0)) {
     needs_client = 0;
+  } else if (strcmp(command_name, "put") == 0 && argc > arg_offset + 1 &&
+             strcmp(argv[arg_offset + 1], "--help") == 0) {
+    needs_client = 0;
   }
 
   cli_client_t* client = NULL;

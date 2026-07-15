@@ -22,10 +22,46 @@ const char* mime_type_from_extension(const char* filename);
 
 #define PUT_CHUNK_SIZE (63 * 1024 * 1024)  /* just under 64 MB OFFS_MAX_CBOR_MESSAGE_SIZE */
 
+static void _print_put_help(void) {
+  printf(
+    "offs put — import a file into the OFFS network\n\n"
+    "Usage: offs put <file> [--temporary] [--recycler <url>] [--tuple-size N]\n\n"
+    "Streams the file to the daemon in 63 MiB chunks. The content type is\n"
+    "detected from the file extension (e.g. .mp4 -> video/mp4); unknown\n"
+    "extensions fall back to application/octet-stream.\n\n"
+    "Flags:\n"
+    "  --temporary            Mark the upload as temporary (the daemon may\n"
+    "                        handle it differently — e.g. skip peer announce).\n"
+    "  --recycler <url>       A peer to recycle (store) the blocks on, in\n"
+    "                        addition to the local cache. The URL is the\n"
+    "                        peer's HTTP address, e.g. http://host:23402.\n"
+    "                        Only one recycler is supported from the CLI.\n"
+    "  --tuple-size N         Erasure-coding width (blocks per tuple). Default 3.\n"
+    "                        Must be <= the daemon's max_tuple_size (default 5).\n"
+    "                        Higher N = more redundancy + more storage; the\n"
+    "                        pre-flight rejects the PUT if N > max_tuple_size.\n"
+    "  --help                Show this help.\n\n"
+    "Examples:\n"
+    "  offs put movie.mp4\n"
+    "  offs put movie.mp4 --recycler http://192.168.1.50:23402\n"
+    "  offs put data.bin --tuple-size 5 --temporary\n\n"
+    "On success, prints the ORI (an OFFS URL you can GET or share).");
+}
+
 int cmd_put(int argc, char** argv, cli_client_t* client) {
   if (argc < 1) {
     fprintf(stderr, "%s\n", L10N_PUT_USAGE);
     return 1;
+  }
+
+  /* --help can appear at any position (including argv[0] when the user runs
+   * "offs put --help" with no file). Scan for it before taking argv[0] as
+   * the file path. */
+  for (int i = 0; i < argc; i++) {
+    if (strcmp(argv[i], "--help") == 0) {
+      _print_put_help();
+      return 0;
+    }
   }
 
   const char* file_path = argv[0];
@@ -48,9 +84,6 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
       }
       tuple_size = (size_t)parsed_tuple_size;
       has_tuple_size = 1;
-    } else if (strcmp(argv[i], "--help") == 0) {
-      printf("%s\n", L10N_PUT_USAGE);
-      return 0;
     }
   }
 
