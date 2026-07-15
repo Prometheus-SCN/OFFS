@@ -40,7 +40,7 @@ static void _print_put_help(void) {
     "                        Must be <= the daemon's max_tuple_size (default 5).\n"
     "                        Higher N = more redundancy + more storage; the\n"
     "                        pre-flight rejects the PUT if N > max_tuple_size.\n"
-    "  help, --help          Show this help.\n\n"
+    "  --help                Show this help.\n\n"
     "Examples:\n"
     "  offs put movie.mp4\n"
     "  offs put movie.mp4 --recycler http://192.168.1.50:23402\n"
@@ -54,11 +54,13 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
     return 1;
   }
 
-  /* 'help' or '--help' can appear at any position (including argv[0] when the
-   * user runs "offs put help" with no file). Scan for it before taking argv[0]
-   * as the file path. */
+  /* --help can appear at any position (including argv[0] when the user runs
+   * "offs put --help" with no file). Scan for it before taking argv[0] as the
+   * file path. Use the --help flag form (not the bare 'help' subcommand)
+   * because put takes a positional file arg — 'put help' would block
+   * importing a file literally named "help". */
   for (int i = 0; i < argc; i++) {
-    if (strcmp(argv[i], "help") == 0 || strcmp(argv[i], "--help") == 0) {
+    if (strcmp(argv[i], "--help") == 0) {
       _print_put_help();
       return 0;
     }
