@@ -99,6 +99,7 @@ typedef struct {
   const char* config_path;
   const char* host;
   uint16_t    port;
+  uint16_t    quic_port;
   const char* unix_path;
   const char* cache_dir;
   const char* data_dir;
@@ -123,6 +124,7 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "  --config <path>      Config file path (JSON)\n");
   fprintf(stderr, "  --host <addr>        Bind address (default: 0.0.0.0)\n");
   fprintf(stderr, "  --port <port>        HTTP port, 0 to disable (default: 23402)\n");
+  fprintf(stderr, "  --quic-port <port>   QUIC/P2P listener port, 0 to disable (default: 23401)\n");
   fprintf(stderr, "  --unix <path>        Unix socket path\n");
   fprintf(stderr, "  --cache-dir <dir>    Block cache directory\n");
   fprintf(stderr, "  --data-dir <dir>     Persistent data directory\n");
@@ -302,6 +304,8 @@ static int _parse_args(int argc, char** argv, offsd_args_t* args) {
       if (_arg_string_set(&args->host, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
       args->port = (uint16_t)atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--quic-port") == 0 && i + 1 < argc) {
+      args->quic_port = (uint16_t)atoi(argv[++i]);
     } else if (strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
       if (_arg_string_set(&args->unix_path, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--cache-dir") == 0 && i + 1 < argc) {
@@ -803,9 +807,22 @@ static config_t* _load_pending_override(const char* data_dir) {
 
 static void _start_listening(offsd_server_t* server,
                              const char* host, uint16_t port,
+                             uint16_t quic_port,
                              const char* unix_path) {
   if (server->http_server != NULL) {
     http_server_listen(server->http_server);
+  }
+
+  /* Start the QUIC/P2P listener so the node can accept incoming direct
+     peer connections (same-LAN fast path, cross-NAT hole-punching).
+     Without this, peer_info_from_node has no HOST candidates (no listen
+     port) and no incoming connections can be accepted. See audit #18. */
+  if (quic_port > 0 && server->network != NULL && server->network->quic_listener != NULL) {
+    if (quic_listener_start(server->network->quic_listener, host, quic_port) == 0) {
+      printf("Listening on quic://%s:%u\n", host, quic_port);
+    } else {
+      fprintf(stderr, "Warning: failed to start QUIC listener on %s:%u\n", host, quic_port);
+    }
   }
 
   if (server->unix_transport != NULL) {
@@ -914,6 +931,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   args.port = 23402;
+  args.quic_port = 23401;
   args.worker_count = 0;
   args.foreground = 0;
 
@@ -938,6 +956,11 @@ int main(int argc, char** argv) {
     printf("  HTTP: disabled\n");
   } else {
     printf("  Port: %u\n", args.port);
+  }
+  if (args.quic_port == 0) {
+    printf("  QUIC: disabled\n");
+  } else {
+    printf("  QUIC: %u\n", args.quic_port);
   }
   printf("  Cache: %s\n", args.cache_dir);
   printf("  Data: %s\n", args.data_dir);
@@ -992,7 +1015,7 @@ int main(int argc, char** argv) {
     }
 
     /* Start listening */
-    _start_listening(&server, args.host, args.port, args.unix_path);
+    _start_listening(&server, args.host, args.port, args.quic_port, args.unix_path);
 
     /* Main loop — wait until a signal clears running (shutdown) or a reload
        RPC sets g_restart_requested. Poll lightly (200 ms) so both flags are
