@@ -30,15 +30,13 @@ int cmd_peer(int argc, char** argv, cli_client_t* client) {
         client_api_peer_info_response_t peer_resp;
         memset(&peer_resp, 0, sizeof(peer_resp));
         if (client_api_peer_info_response_decode(response, &peer_resp) == 0) {
-          /* The response data is serialized CBOR peer_info. Base58-encode it
-             directly for a clean printable connection string that can be
-             passed to `peer connect` or rendered as a QR code. The peer
-             connect handler decodes base58 back to CBOR then to peer_info. */
           size_t b58_len = base58_encoded_length(peer_resp.data_size) + 1;
           char* b58 = (char*)malloc(b58_len);
           if (b58 != NULL) {
-            if (base58_encode(peer_resp.data, peer_resp.data_size,
-                              b58, b58_len) == 0) {
+            int enc_rc = base58_encode(peer_resp.data, peer_resp.data_size,
+                              b58, b58_len);
+            if (enc_rc > 0) {
+              b58[enc_rc] = '\0';
               printf("%s\n", L10N_PEER_INFO_PROMPT);
               printf("  Data: %s\n", b58);
             }
@@ -83,7 +81,7 @@ int cmd_peer(int argc, char** argv, cli_client_t* client) {
 
     client_api_peer_connect_t peer_con;
     memset(&peer_con, 0, sizeof(peer_con));
-    peer_con.format = 0;
+    peer_con.format = 1;  /* base58 text — peer info outputs base58 */
     peer_con.data = (uint8_t*)argv[1];
     peer_con.data_size = strlen(argv[1]);
 
