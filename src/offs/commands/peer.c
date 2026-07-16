@@ -5,6 +5,7 @@
 #include "../client.h"
 #include "../l10n/en.h"
 #include "ClientAPI/client_api_wire.h"
+#include "Util/base58.h"
 #include <cbor.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,8 +30,20 @@ int cmd_peer(int argc, char** argv, cli_client_t* client) {
         client_api_peer_info_response_t peer_resp;
         memset(&peer_resp, 0, sizeof(peer_resp));
         if (client_api_peer_info_response_decode(response, &peer_resp) == 0) {
-          printf("%s\n", L10N_PEER_INFO_PROMPT);
-          printf("  Data: %.*s\n", (int)peer_resp.data_size, peer_resp.data);
+          /* The response data is serialized CBOR peer_info. Base58-encode it
+             directly for a clean printable connection string that can be
+             passed to `peer connect` or rendered as a QR code. The peer
+             connect handler decodes base58 back to CBOR then to peer_info. */
+          size_t b58_len = base58_encoded_length(peer_resp.data_size) + 1;
+          char* b58 = (char*)malloc(b58_len);
+          if (b58 != NULL) {
+            if (base58_encode(peer_resp.data, peer_resp.data_size,
+                              b58, b58_len) == 0) {
+              printf("%s\n", L10N_PEER_INFO_PROMPT);
+              printf("  Data: %s\n", b58);
+            }
+            free(b58);
+          }
           client_api_peer_info_response_destroy(&peer_resp);
         }
       }
