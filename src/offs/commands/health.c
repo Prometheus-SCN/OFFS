@@ -23,6 +23,7 @@ int cmd_health(int argc, char** argv, cli_client_t* client) {
     return 1;
   }
 
+  int result = 1;
   uint8_t type = client_api_wire_get_type(response);
   if (type == CLIENT_API_HEALTH_RESPONSE) {
     client_api_health_response_t health_resp;
@@ -38,6 +39,7 @@ int cmd_health(int argc, char** argv, cli_client_t* client) {
         printf("%s\n", health_resp.json_data);
       }
       client_api_health_response_destroy(&health_resp);
+      result = 0;
     } else {
       fprintf(stderr, "%s: invalid health response\n", L10N_ERROR);
     }
@@ -48,8 +50,10 @@ int cmd_health(int argc, char** argv, cli_client_t* client) {
       fprintf(stderr, "%s: %s\n", L10N_ERROR, err_msg.message);
       client_api_error_destroy(&err_msg);
     }
+    /* Error was printed but cmd_health used to fall through to return 0,
+     * masking the failure from scripts checking $?. */
   }
 
   cbor_decref(&response);
-  return 0;
+  return result;
 }
