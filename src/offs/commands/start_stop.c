@@ -18,6 +18,10 @@
 #include <sys/stat.h>
 #endif
 
+/* Forward declaration: cmd_start checks this before forking to refuse a
+ * double-start, and cmd_stop / cmd_restart use it as a liveness test. */
+static int _is_daemon_running(void);
+
 int cmd_start(int argc, char** argv, cli_client_t* client) {
   (void)client;
 
@@ -28,6 +32,15 @@ int cmd_start(int argc, char** argv, cli_client_t* client) {
              "  --cache-dir <dir>, --data-dir <dir>, --port <n>, --config <path>).\n");
       return 0;
     }
+  }
+
+  /* Double-start guard: refuse to spawn a second daemon if one is already
+   * running. Without this, "offs start; offs start" races two daemons on the
+   * same socket and the user gets a misleading "Daemon started" message.
+   * L10N_DAEMON_ALREADY_RUNNING was previously defined but never wired up. */
+  if (_is_daemon_running()) {
+    fprintf(stderr, "%s\n", L10N_DAEMON_ALREADY_RUNNING);
+    return 1;
   }
 
 #ifdef _WIN32
