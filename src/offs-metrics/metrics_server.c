@@ -132,7 +132,7 @@ static int _handle_report(http_request_t* request, http_response_t* response,
            metrics.peer_snapshot_count);
 
   http_response_set_status(response, HTTP_STATUS_OK);
-  http_response_write(response, "{\"status\":\"ok\"}", 14);
+  http_response_write(response, "{\"status\":\"ok\"}", 15);
   http_response_end(response);
   return 1;
 }
