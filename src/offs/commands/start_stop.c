@@ -362,7 +362,24 @@ int cmd_restart(int argc, char** argv, cli_client_t* client) {
     if (preserved_argv != NULL) { for (int i = 0; i < start_argc; i++) free(preserved_argv[i]); free(preserved_argv); }
     return ret;
   }
-  platform_sleep_ms(1000); /* Give daemon time to release the socket/pipe */
+
+  /* Wait for the old daemon to actually stop before starting the new one.
+   * The previous fixed 1s sleep was shorter than a graceful drain, so the
+   * new offsd could fail to bind the socket while the old one was still
+   * shutting down — cmd_start's probe would (correctly) report failure,
+   * leaving the user with no daemon. Poll _is_daemon_running for up to 10s;
+   * if it doesn't go down, warn but proceed rather than blocking forever.
+   * cmd_start's own probe (added in #16) verifies the new daemon came up
+   * and returns 1 if it didn't, so restart no longer exits 0 with no daemon. */
+  int waited_ms = 0;
+  while (_is_daemon_running() && waited_ms < 10000) {
+    platform_sleep_ms(100);
+    waited_ms += 100;
+  }
+  if (_is_daemon_running()) {
+    fprintf(stderr, "Warning: old daemon still running after 10s; proceeding with restart\n");
+  }
+
   int start_ret = cmd_start(start_argc, start_argv, NULL);
   if (preserved_argv != NULL) {
     for (int i = 0; i < start_argc; i++) free(preserved_argv[i]);
