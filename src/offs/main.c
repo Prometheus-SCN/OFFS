@@ -17,19 +17,34 @@ static const char* g_lang = "en";
 int main(int argc, char** argv) {
   g_lang = cli_detect_lang();
 
+  /* Parse --socket and --lang anywhere in argv (before the subcommand's own
+   * positional args). The previous parser only recognized them at a fixed
+   * position (right after the program name, in --lang then --socket order),
+   * so "offs status --socket /x" silently connected to the default socket
+   * because --socket landed after the subcommand. Scan all args, lift
+   * --socket/--lang (and their values) out, and compact the remaining args
+   * in place so the subcommand sees a clean argv. */
+  int write_idx = 1;  /* argv[0] is the program name; keep it. */
+  for (int read_idx = 1; read_idx < argc; read_idx++) {
+    if (strcmp(argv[read_idx], "--socket") == 0) {
+      if (read_idx + 1 < argc) {
+        g_socket_path = argv[read_idx + 1];
+        read_idx++;  /* consume the value too */
+      }
+      continue;
+    }
+    if (strcmp(argv[read_idx], "--lang") == 0) {
+      if (read_idx + 1 < argc) {
+        g_lang = argv[read_idx + 1];
+        read_idx++;
+      }
+      continue;
+    }
+    argv[write_idx++] = argv[read_idx];
+  }
+  argc = write_idx;
+
   int arg_offset = 1;
-
-  /* Handle --lang global flag before command */
-  if (argc > 1 && strcmp(argv[1], "--lang") == 0 && argc > 2) {
-    g_lang = argv[2];
-    arg_offset = 3;
-  }
-
-  /* Handle --socket global flag */
-  if (argc > arg_offset && strcmp(argv[arg_offset], "--socket") == 0 && argc > arg_offset + 1) {
-    g_socket_path = argv[arg_offset + 1];
-    arg_offset += 2;
-  }
 
   if (argc <= arg_offset) {
     cli_print_help(NULL);
