@@ -186,7 +186,12 @@ int cmd_stop(int argc, char** argv, cli_client_t* client) {
     return 1;
   }
 #else
-  int result = system("pkill -TERM offsd 2>/dev/null");
+  /* Use -x for an exact process-name match so we don't also signal
+   * helper/auxiliary binaries whose names start with "offsd" (e.g.
+   * offsd-helper). _is_daemon_running already uses `pgrep -x`; the stop
+   * path used bare `pkill -TERM offsd` which matches any process whose
+   * name contains "offsd" as a substring. */
+  int result = system("pkill -TERM -x offsd 2>/dev/null");
   if (result != 0) {
     fprintf(stderr, "Failed to stop daemon\n");
     return 1;
