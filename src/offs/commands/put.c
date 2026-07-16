@@ -75,9 +75,17 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--temporary") == 0) {
       temporary = 1;
-    } else if (strcmp(argv[i], "--recycler") == 0 && i + 1 < argc) {
+    } else if (strcmp(argv[i], "--recycler") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Error: --recycler requires a URL argument\n");
+        return 1;
+      }
       recycler_url = argv[++i];
-    } else if (strcmp(argv[i], "--tuple-size") == 0 && i + 1 < argc) {
+    } else if (strcmp(argv[i], "--tuple-size") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "%s\n", L10N_PUT_TUPLE_SIZE_USAGE);
+        return 1;
+      }
       char* endptr = NULL;
       long parsed_tuple_size = strtol(argv[++i], &endptr, 10);
       if (*endptr != '\0' || parsed_tuple_size <= 0) {
@@ -86,6 +94,12 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
       }
       tuple_size = (size_t)parsed_tuple_size;
       has_tuple_size = 1;
+    } else if (strncmp(argv[i], "--", 2) == 0) {
+      /* Unknown flag. Previously silently dropped, so typos like
+       * "--temporay" or "--tuplesize 5" were ignored and the upload
+       * proceeded with default settings. */
+      fprintf(stderr, "Error: unknown flag '%s'\n", argv[i]);
+      return 1;
     }
   }
 

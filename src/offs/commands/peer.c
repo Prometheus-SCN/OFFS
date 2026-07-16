@@ -78,10 +78,23 @@ int cmd_peer(int argc, char** argv, cli_client_t* client) {
     cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
-    if (response != NULL) {
-      cbor_decref(&response);
-      printf("%s\n", L10N_OK);
+    if (response == NULL) {
+      fprintf(stderr, "%s\n", L10N_DAEMON_UNREACHABLE);
+      return 1;
     }
+    uint8_t type = client_api_wire_get_type(response);
+    if (type == CLIENT_API_ERROR) {
+      client_api_error_t err_msg;
+      memset(&err_msg, 0, sizeof(err_msg));
+      if (client_api_error_decode(response, &err_msg) == 0) {
+        fprintf(stderr, "%s: %s\n", L10N_ERROR, err_msg.message);
+        client_api_error_destroy(&err_msg);
+      }
+      cbor_decref(&response);
+      return 1;
+    }
+    cbor_decref(&response);
+    printf("%s\n", L10N_OK);
     return 0;
   }
 

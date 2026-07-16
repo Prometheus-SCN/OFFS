@@ -16,7 +16,48 @@
 #include <libgen.h>
 #include <limits.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #endif
+
+/* Default daemon socket path. Kept in sync with main.c's DEFAULT_SOCKET.
+ * Used as the probe target when the user did not pass --unix to start. */
+#define START_DEFAULT_SOCKET "/var/run/offs.sock"
+
+/* Forward declaration: cmd_start checks this before forking to refuse a
+ * double-start, and cmd_stop / cmd_restart use it as a liveness test. */
+static int _is_daemon_running(void);
+
+/* Scan forwarded offsd args for a --unix <path> flag so the start probe
+ * connects to the same socket the daemon is actually listening on. Returns
+ * the path from argv, or START_DEFAULT_SOCKET if --unix was not specified. */
+static const char* _probe_socket_path(int argc, char** argv) {
+  for (int i = 0; i < argc; i++) {
+    if (strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
+      return argv[i + 1];
+    }
+  }
+  return START_DEFAULT_SOCKET;
+}
+
+/* Poll the daemon's local socket for up to timeout_ms. Returns 1 if a
+ * connection succeeds within the budget, 0 otherwise. Used by cmd_start /
+ * cmd_restart to verify the daemon actually came up rather than reporting
+ * success for a child that failed to exec or bind. */
+static int _probe_daemon_up(const char* socket_path, int timeout_ms) {
+  for (int elapsed = 0; elapsed < timeout_ms; elapsed += 100) {
+    cli_client_t* probe = cli_client_create(socket_path);
+    if (probe == NULL) {
+      return 0;
+    }
+    if (cli_client_connect(probe) == 0) {
+      cli_client_destroy(probe);
+      return 1;
+    }
+    cli_client_destroy(probe);
+    platform_sleep_ms(100);
+  }
+  return 0;
+}
 
 int cmd_start(int argc, char** argv, cli_client_t* client) {
   (void)client;
@@ -28,6 +69,15 @@ int cmd_start(int argc, char** argv, cli_client_t* client) {
              "  --cache-dir <dir>, --data-dir <dir>, --port <n>, --config <path>).\n");
       return 0;
     }
+  }
+
+  /* Double-start guard: refuse to spawn a second daemon if one is already
+   * running. Without this, "offs start; offs start" races two daemons on the
+   * same socket and the user gets a misleading "Daemon started" message.
+   * L10N_DAEMON_ALREADY_RUNNING was previously defined but never wired up. */
+  if (_is_daemon_running()) {
+    fprintf(stderr, "%s\n", L10N_DAEMON_ALREADY_RUNNING);
+    return 1;
   }
 
 #ifdef _WIN32
@@ -84,6 +134,29 @@ int cmd_start(int argc, char** argv, cli_client_t* client) {
     _exit(1);
   }
 
+  /* Parent: verify the child actually started. offsd double-forks when
+   * daemonizing, so the PID we just printed belongs to an intermediate that
+   * exits almost immediately — waitpid(WNOHANG) catches an immediate execvp
+   * failure (offsd not on PATH, execv permission denied), and a socket probe
+   * confirms the daemon bound and is accepting connections. Without this,
+   * "offs start" reported "Daemon started (PID: N)" + exit 0 even when the
+   * child died before binding, and the printed PID belonged to a process
+   * that had already _exit(0)'d. */
+  int child_status = 0;
+  pid_t waited = waitpid(pid, &child_status, WNOHANG);
+  if (waited == pid && child_status != 0) {
+    fprintf(stderr, "Daemon failed to start (child exited with status %d)\n",
+            WEXITSTATUS(child_status));
+    return 1;
+  }
+
+  const char* socket_path = _probe_socket_path(argc, argv);
+  if (!_probe_daemon_up(socket_path, 3000)) {
+    fprintf(stderr, "Daemon failed to start (no response at %s within 3s)\n",
+            socket_path);
+    return 1;
+  }
+
   printf(L10N_DAEMON_STARTED "\n", pid);
   return 0;
 #endif
@@ -113,7 +186,12 @@ int cmd_stop(int argc, char** argv, cli_client_t* client) {
     return 1;
   }
 #else
-  int result = system("pkill -TERM offsd 2>/dev/null");
+  /* Use -x for an exact process-name match so we don't also signal
+   * helper/auxiliary binaries whose names start with "offsd" (e.g.
+   * offsd-helper). _is_daemon_running already uses `pgrep -x`; the stop
+   * path used bare `pkill -TERM offsd` which matches any process whose
+   * name contains "offsd" as a substring. */
+  int result = system("pkill -TERM -x offsd 2>/dev/null");
   if (result != 0) {
     fprintf(stderr, "Failed to stop daemon\n");
     return 1;
@@ -284,7 +362,24 @@ int cmd_restart(int argc, char** argv, cli_client_t* client) {
     if (preserved_argv != NULL) { for (int i = 0; i < start_argc; i++) free(preserved_argv[i]); free(preserved_argv); }
     return ret;
   }
-  platform_sleep_ms(1000); /* Give daemon time to release the socket/pipe */
+
+  /* Wait for the old daemon to actually stop before starting the new one.
+   * The previous fixed 1s sleep was shorter than a graceful drain, so the
+   * new offsd could fail to bind the socket while the old one was still
+   * shutting down — cmd_start's probe would (correctly) report failure,
+   * leaving the user with no daemon. Poll _is_daemon_running for up to 10s;
+   * if it doesn't go down, warn but proceed rather than blocking forever.
+   * cmd_start's own probe (added in #16) verifies the new daemon came up
+   * and returns 1 if it didn't, so restart no longer exits 0 with no daemon. */
+  int waited_ms = 0;
+  while (_is_daemon_running() && waited_ms < 10000) {
+    platform_sleep_ms(100);
+    waited_ms += 100;
+  }
+  if (_is_daemon_running()) {
+    fprintf(stderr, "Warning: old daemon still running after 10s; proceeding with restart\n");
+  }
+
   int start_ret = cmd_start(start_argc, start_argv, NULL);
   if (preserved_argv != NULL) {
     for (int i = 0; i < start_argc; i++) free(preserved_argv[i]);

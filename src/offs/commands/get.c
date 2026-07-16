@@ -6,6 +6,7 @@
 #include "../l10n/en.h"
 #include "ClientAPI/client_api_wire.h"
 #include <cbor.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,17 +74,29 @@ int cmd_get(int argc, char** argv, cli_client_t* client) {
   FILE* output = output_path ? fopen(output_path, "wb") : stdout;
   if (output == NULL) { perror("fopen"); return 1; }
 
-  /* Read data frames until GET_END */
+  /* Read data frames until GET_END. Track whether we saw GET_END so a
+   * dropped connection (NULL frame) is reported as truncation rather than
+   * silently exiting 0. */
+  bool saw_end = false;
+  bool had_error = false;
+  bool short_write = false;
+
   while ((response = cli_client_recv_frame(client)) != NULL) {
     type = client_api_wire_get_type(response);
     if (type == CLIENT_API_GET_DATA) {
       client_api_get_data_t get_data;
       memset(&get_data, 0, sizeof(get_data));
       if (client_api_get_data_decode(response, &get_data) == 0) {
-        fwrite(get_data.data, 1, get_data.data_size, output);
+        size_t written = fwrite(get_data.data, 1, get_data.data_size, output);
+        if (written < get_data.data_size) {
+          fprintf(stderr, "%s: short write (%zu/%zu bytes)\n",
+                  L10N_ERROR, written, get_data.data_size);
+          short_write = true;
+        }
         client_api_get_data_destroy(&get_data);
       }
     } else if (type == CLIENT_API_GET_END) {
+      saw_end = true;
       cbor_decref(&response);
       break;
     } else if (type == CLIENT_API_ERROR) {
@@ -93,6 +106,7 @@ int cmd_get(int argc, char** argv, cli_client_t* client) {
       fprintf(stderr, "%s: %s\n", L10N_ERROR, err_msg.message);
       client_api_error_destroy(&err_msg);
       cbor_decref(&response);
+      had_error = true;
       break;
     }
     cbor_decref(&response);
@@ -100,5 +114,17 @@ int cmd_get(int argc, char** argv, cli_client_t* client) {
 
   client_api_get_response_start_destroy(&start_msg);
   if (output_path) fclose(output);
+
+  if (had_error) {
+    return 1;
+  }
+  if (!saw_end) {
+    /* NULL frame without GET_END: connection dropped / recv budget expired. */
+    fprintf(stderr, "%s: stream truncated (no GET_END frame)\n", L10N_ERROR);
+    return 1;
+  }
+  if (short_write) {
+    return 1;
+  }
   return 0;
 }
