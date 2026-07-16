@@ -59,12 +59,14 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  /* start/restart/version spawn or print info and don't need a socket connection.
-   * config help/--help is pure client-side (prints the field reference) and
-   * should work without a running daemon. */
+  /* start/stop/restart/version spawn or print info and don't need a socket connection.
+   * stop uses process signals (pgrep/pkill), not the client connection — requiring
+   * a connection meant `offs stop` couldn't reach cmd_stop if the daemon was
+   * running on a different socket. config help/--help is pure client-side
+   * (prints the field reference) and should work without a running daemon. */
   int needs_client = 1;
-  if (strcmp(command_name, "start") == 0 || strcmp(command_name, "restart") == 0 ||
-      strcmp(command_name, "version") == 0) {
+  if (strcmp(command_name, "start") == 0 || strcmp(command_name, "stop") == 0 ||
+      strcmp(command_name, "restart") == 0 || strcmp(command_name, "version") == 0) {
     needs_client = 0;
   } else if (strcmp(command_name, "config") == 0 && argc > arg_offset + 1 &&
              (strcmp(argv[arg_offset + 1], "help") == 0 ||
