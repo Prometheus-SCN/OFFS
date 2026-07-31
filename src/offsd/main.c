@@ -15,6 +15,9 @@
 #include "ClientAPI/HTTP/block_routes.h"
 #include "ClientAPI/HTTP/cors.h"
 #include "ClientAPI/Unix/unix_transport.h"
+#include "ClientAPI/WS/ws_transport.h"
+#include "ClientAPI/WT/wt_transport.h"
+#include "ClientAPI/WT/webtransport_h3.h"
 #include "ClientAPI/HTTP/health_routes.h"
 #include "ClientAPI/health_handler.h"
 #include "ClientAPI/HTTP/peer_routes.h"
@@ -22,6 +25,7 @@
 #include "Node/node.h"
 #include "Network/authority.h"
 #include "Network/network.h"
+#include "Network/peer_verify.h"
 #include "OFFStreams/tuple_cache.h"
 #include "BlockCache/block_cache.h"
 #include "OFFStreams/ofd_cache.h"
@@ -112,6 +116,14 @@ typedef struct {
   const char* ca_cert_path;
   const char* node_cert_path;
   const char* node_key_path;
+  uint16_t    ws_port;
+  uint16_t    wt_port;
+  uint16_t    wt_h3_port;
+  const char* ws_cert_path;
+  const char* ws_key_path;
+  const char* wt_cert_path;
+  const char* wt_key_path;
+  uint8_t     allow_secure;
 } offsd_args_t;
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -137,6 +149,14 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "  --ca-cert <path>      CA certificate PEM path\n");
   fprintf(stderr, "  --node-cert <path>    Node certificate PEM path\n");
   fprintf(stderr, "  --node-key <path>     Node private key PEM path\n");
+  fprintf(stderr, "  --ws-port <port>      WebSocket port, 0 to disable (default: 0)\n");
+  fprintf(stderr, "  --wt-port <port>      WebTransport (custom QUIC) port, 0 to disable (default: 0)\n");
+  fprintf(stderr, "  --wt-h3-port <port>  HTTP/3 WebTransport port, 0 to disable (default: 0)\n");
+  fprintf(stderr, "  --ws-cert <path>      WebSocket TLS certificate PEM path\n");
+  fprintf(stderr, "  --ws-key <path>       WebSocket TLS private key PEM path\n");
+  fprintf(stderr, "  --wt-cert <path>      WebTransport TLS certificate PEM path\n");
+  fprintf(stderr, "  --wt-key <path>       WebTransport TLS private key PEM path\n");
+  fprintf(stderr, "  --allow-secure        Require CA validation for TLS transports\n");
   fprintf(stderr, "  --help               Show this help\n");
 }
 
@@ -274,6 +294,53 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
     }
   }
 
+  /* [websocket] section */
+  cJSON* ws_section = cJSON_GetObjectItem(root, "websocket");
+  if (ws_section != NULL) {
+    cJSON* ws_port = cJSON_GetObjectItem(ws_section, "port");
+    if (cJSON_IsNumber(ws_port) && args->ws_port == 0) {
+      args->ws_port = (uint16_t)ws_port->valueint;
+    }
+    cJSON* ws_cert = cJSON_GetObjectItem(ws_section, "cert");
+    if (cJSON_IsString(ws_cert) && args->ws_cert_path == NULL) {
+      args->ws_cert_path = strdup(ws_cert->valuestring);
+      if (args->ws_cert_path == NULL) { cJSON_Delete(root); return -1; }
+    }
+    cJSON* ws_key = cJSON_GetObjectItem(ws_section, "key");
+    if (cJSON_IsString(ws_key) && args->ws_key_path == NULL) {
+      args->ws_key_path = strdup(ws_key->valuestring);
+      if (args->ws_key_path == NULL) { cJSON_Delete(root); return -1; }
+    }
+  }
+
+  /* [webtransport] section */
+  cJSON* wt_section = cJSON_GetObjectItem(root, "webtransport");
+  if (wt_section != NULL) {
+    cJSON* wt_port = cJSON_GetObjectItem(wt_section, "port");
+    if (cJSON_IsNumber(wt_port) && args->wt_port == 0) {
+      args->wt_port = (uint16_t)wt_port->valueint;
+    }
+    cJSON* wt_cert = cJSON_GetObjectItem(wt_section, "cert");
+    if (cJSON_IsString(wt_cert) && args->wt_cert_path == NULL) {
+      args->wt_cert_path = strdup(wt_cert->valuestring);
+      if (args->wt_cert_path == NULL) { cJSON_Delete(root); return -1; }
+    }
+    cJSON* wt_key = cJSON_GetObjectItem(wt_section, "key");
+    if (cJSON_IsString(wt_key) && args->wt_key_path == NULL) {
+      args->wt_key_path = strdup(wt_key->valuestring);
+      if (args->wt_key_path == NULL) { cJSON_Delete(root); return -1; }
+    }
+  }
+
+  /* [security] section */
+  cJSON* security_section = cJSON_GetObjectItem(root, "security");
+  if (security_section != NULL) {
+    cJSON* allow_secure = cJSON_GetObjectItem(security_section, "allow-secure");
+    if (cJSON_IsBool(allow_secure) && !args->allow_secure) {
+      args->allow_secure = cJSON_IsTrue(allow_secure) ? 1 : 0;
+    }
+  }
+
   cJSON_Delete(root);
   return 0;
 }
@@ -331,6 +398,22 @@ static int _parse_args(int argc, char** argv, offsd_args_t* args) {
       if (_arg_string_set(&args->node_cert_path, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--node-key") == 0 && i + 1 < argc) {
       if (_arg_string_set(&args->node_key_path, argv[++i]) != 0) return -1;
+    } else if (strcmp(argv[i], "--ws-port") == 0 && i + 1 < argc) {
+      args->ws_port = (uint16_t)atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--wt-port") == 0 && i + 1 < argc) {
+      args->wt_port = (uint16_t)atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--wt-h3-port") == 0 && i + 1 < argc) {
+      args->wt_h3_port = (uint16_t)atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--ws-cert") == 0 && i + 1 < argc) {
+      if (_arg_string_set(&args->ws_cert_path, argv[++i]) != 0) return -1;
+    } else if (strcmp(argv[i], "--ws-key") == 0 && i + 1 < argc) {
+      if (_arg_string_set(&args->ws_key_path, argv[++i]) != 0) return -1;
+    } else if (strcmp(argv[i], "--wt-cert") == 0 && i + 1 < argc) {
+      if (_arg_string_set(&args->wt_cert_path, argv[++i]) != 0) return -1;
+    } else if (strcmp(argv[i], "--wt-key") == 0 && i + 1 < argc) {
+      if (_arg_string_set(&args->wt_key_path, argv[++i]) != 0) return -1;
+    } else if (strcmp(argv[i], "--allow-secure") == 0) {
+      args->allow_secure = 1;
     } else if (strcmp(argv[i], "--help") == 0) {
       _print_usage(argv[0]);
       return 1;
@@ -401,6 +484,10 @@ static void _free_args(offsd_args_t* args) {
   free((void*)args->ca_cert_path);
   free((void*)args->node_cert_path);
   free((void*)args->node_key_path);
+  free((void*)args->ws_cert_path);
+  free((void*)args->ws_key_path);
+  free((void*)args->wt_cert_path);
+  free((void*)args->wt_key_path);
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -479,6 +566,9 @@ typedef struct {
   uint8_t           draining_val;
   uint64_t          start_time_ms;
   unix_transport_t* unix_transport;
+  ws_transport_t*   ws_transport;
+  wt_transport_t*   wt_transport;
+  webtransport_h3_t* wt_h3_transport;
   update_actor_t*    update_actor;
   ATOMIC(uint32_t)  open_stream_count;
   update_status_context_t update_status_ctx;
@@ -704,6 +794,90 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
                            _request_restart, NULL);
   }
 
+  /* WebSocket transport */
+  server->ws_transport = NULL;
+  if (args->ws_port != 0) {
+    server->ws_transport = ws_transport_create(
+        server->pool, server->block_cache, server->ofd_cache,
+        server->tuple_cache, args->host, args->ws_port,
+        args->ws_cert_path, args->ws_key_path, 0, NULL,
+        &server->health_ctx);
+    if (server->ws_transport == NULL) {
+      fprintf(stderr, "Failed to create WebSocket transport on %s:%u\n",
+              args->host, args->ws_port);
+      authority_save_peers(server->authority, server->network);
+      network_destroy(server->network);
+      authority_destroy(server->authority);
+      if (server->http_server != NULL) http_server_destroy(server->http_server);
+      tuple_cache_destroy(server->tuple_cache);
+      ofd_cache_destroy(server->ofd_cache);
+      block_cache_destroy(server->block_cache);
+      timer_actor_destroy(server->timer);
+      scheduler_pool_stop(server->pool);
+      scheduler_pool_destroy(server->pool);
+      return -1;
+    }
+  }
+
+  /* WebTransport transport */
+  server->wt_transport = NULL;
+  if (args->wt_port != 0) {
+    server->wt_transport = wt_transport_create(
+        server->pool, server->block_cache, server->ofd_cache,
+        server->tuple_cache, args->host, args->wt_port,
+        args->wt_cert_path, args->wt_key_path, args->ca_cert_path,
+        args->allow_secure != 0, 0, NULL, &server->health_ctx);
+    if (server->wt_transport == NULL) {
+      fprintf(stderr, "Failed to create WebTransport transport on %s:%u\n",
+              args->host, args->wt_port);
+      if (server->ws_transport != NULL) {
+        ws_transport_destroy(server->ws_transport);
+      }
+      authority_save_peers(server->authority, server->network);
+      network_destroy(server->network);
+      authority_destroy(server->authority);
+      if (server->http_server != NULL) http_server_destroy(server->http_server);
+      tuple_cache_destroy(server->tuple_cache);
+      ofd_cache_destroy(server->ofd_cache);
+      block_cache_destroy(server->block_cache);
+      timer_actor_destroy(server->timer);
+      scheduler_pool_stop(server->pool);
+      scheduler_pool_destroy(server->pool);
+      return -1;
+    }
+  }
+
+  /* HTTP/3 WebTransport transport */
+  server->wt_h3_transport = NULL;
+  if (args->wt_h3_port != 0) {
+    server->wt_h3_transport = webtransport_h3_create(
+        server->pool, server->block_cache, server->ofd_cache,
+        server->tuple_cache, args->host, args->wt_h3_port,
+        args->wt_cert_path, args->wt_key_path, args->ca_cert_path,
+        args->allow_secure != 0, NULL, &server->health_ctx);
+    if (server->wt_h3_transport == NULL) {
+      fprintf(stderr, "Failed to create WebTransport H3 transport on %s:%u\n",
+              args->host, args->wt_h3_port);
+      if (server->wt_transport != NULL) {
+        wt_transport_destroy(server->wt_transport);
+      }
+      if (server->ws_transport != NULL) {
+        ws_transport_destroy(server->ws_transport);
+      }
+      authority_save_peers(server->authority, server->network);
+      network_destroy(server->network);
+      authority_destroy(server->authority);
+      if (server->http_server != NULL) http_server_destroy(server->http_server);
+      tuple_cache_destroy(server->tuple_cache);
+      ofd_cache_destroy(server->ofd_cache);
+      block_cache_destroy(server->block_cache);
+      timer_actor_destroy(server->timer);
+      scheduler_pool_stop(server->pool);
+      scheduler_pool_destroy(server->pool);
+      return -1;
+    }
+  }
+
   /* Unix transport */
   server->unix_transport = NULL;
   if (args->unix_path != NULL) {
@@ -714,6 +888,15 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
     if (server->unix_transport == NULL) {
       fprintf(stderr, "Failed to create Unix transport on %s\n",
               args->unix_path);
+      if (server->wt_transport != NULL) {
+        wt_transport_destroy(server->wt_transport);
+      }
+      if (server->wt_h3_transport != NULL) {
+        webtransport_h3_destroy(server->wt_h3_transport);
+      }
+      if (server->ws_transport != NULL) {
+        ws_transport_destroy(server->ws_transport);
+      }
       authority_save_peers(server->authority, server->network);
       network_destroy(server->network);
       authority_destroy(server->authority);
@@ -806,9 +989,7 @@ static config_t* _load_pending_override(const char* data_dir) {
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
 static void _start_listening(offsd_server_t* server,
-                             const char* host, uint16_t port,
-                             uint16_t quic_port,
-                             const char* unix_path) {
+                             const offsd_args_t* args) {
   if (server->http_server != NULL) {
     http_server_listen(server->http_server);
   }
@@ -817,24 +998,45 @@ static void _start_listening(offsd_server_t* server,
      peer connections (same-LAN fast path, cross-NAT hole-punching).
      Without this, peer_info_from_node has no HOST candidates (no listen
      port) and no incoming connections can be accepted. See audit #18. */
-  if (quic_port > 0 && server->network != NULL && server->network->quic_listener != NULL) {
-    if (quic_listener_start(server->network->quic_listener, host, quic_port) == 0) {
-      printf("Listening on quic://%s:%u\n", host, quic_port);
+  if (args->quic_port > 0 && server->network != NULL && server->network->quic_listener != NULL) {
+    if (quic_listener_start(server->network->quic_listener, args->host, args->quic_port) == 0) {
+      printf("Listening on quic://%s:%u\n", args->host, args->quic_port);
     } else {
-      fprintf(stderr, "Warning: failed to start QUIC listener on %s:%u\n", host, quic_port);
+      fprintf(stderr, "Warning: failed to start QUIC listener on %s:%u\n", args->host, args->quic_port);
     }
   }
 
+  if (server->ws_transport != NULL) {
+    ws_transport_start(server->ws_transport);
+    printf("Listening on ws://%s:%u\n", args->host, args->ws_port);
+    if (args->ws_cert_path != NULL && args->ws_key_path != NULL) {
+      printf("Listening on wss://%s:%u\n", args->host, args->ws_port);
+    }
+  }
+  if (server->wt_transport != NULL) {
+    wt_transport_start(server->wt_transport);
+    printf("Listening on wt://%s:%u\n", args->host, args->wt_port);
+    if (args->wt_cert_path != NULL && args->wt_key_path != NULL) {
+      printf("Listening on wts://%s:%u\n", args->host, args->wt_port);
+    }
+  }
+  if (server->wt_h3_transport != NULL) {
+    webtransport_h3_start(server->wt_h3_transport);
+    printf("Listening on wt://%s:%u (HTTP/3)\n", args->host, args->wt_h3_port);
+    if (args->wt_cert_path != NULL && args->wt_key_path != NULL) {
+      printf("Listening on wts://%s:%u (HTTP/3)\n", args->host, args->wt_h3_port);
+    }
+  }
   if (server->unix_transport != NULL) {
     unix_transport_start(server->unix_transport);
-    printf("Listening on unix://%s\n", unix_path);
+    printf("Listening on unix://%s\n", args->unix_path);
   }
 
   authority_load_peers(server->authority, server->network);
   network_start_connections(server->network);
 
   if (server->http_server != NULL) {
-    printf("Listening on http://%s:%u\n", host, port);
+    printf("Listening on http://%s:%u\n", args->host, args->port);
   }
   printf("Press Ctrl+C to stop\n");
 }
@@ -851,7 +1053,18 @@ static void _shutdown(offsd_server_t* server, const char* pid_file) {
     unix_transport_stop(server->unix_transport);
   }
 
-  /* 2. Save peers and stop network connections */
+  /* 2. Stop WebSocket and WebTransport transports */
+  if (server->ws_transport != NULL) {
+    ws_transport_stop(server->ws_transport);
+  }
+  if (server->wt_transport != NULL) {
+    wt_transport_stop(server->wt_transport);
+  }
+  if (server->wt_h3_transport != NULL) {
+    webtransport_h3_stop(server->wt_h3_transport);
+  }
+
+  /* 3. Save peers and stop network connections */
   if (server->network != NULL) {
     authority_save_peers(server->authority, server->network);
     ATOMIC_STORE(&server->network->running, 0);
@@ -867,6 +1080,15 @@ static void _shutdown(offsd_server_t* server, const char* pid_file) {
   /* 4. Destroy in reverse order */
   if (server->unix_transport != NULL) {
     unix_transport_destroy(server->unix_transport);
+  }
+  if (server->ws_transport != NULL) {
+    ws_transport_destroy(server->ws_transport);
+  }
+  if (server->wt_transport != NULL) {
+    wt_transport_destroy(server->wt_transport);
+  }
+  if (server->wt_h3_transport != NULL) {
+    webtransport_h3_destroy(server->wt_h3_transport);
   }
   if (server->http_server != NULL) {
     http_server_destroy(server->http_server);
@@ -965,6 +1187,12 @@ int main(int argc, char** argv) {
   printf("  Cache: %s\n", args.cache_dir);
   printf("  Data: %s\n", args.data_dir);
   printf("  Workers: %d\n", args.worker_count);
+  if (args.ws_port != 0) {
+    printf("  WebSocket: %u\n", args.ws_port);
+  }
+  if (args.wt_port != 0) {
+    printf("  WebTransport: %u\n", args.wt_port);
+  }
   if (args.unix_path != NULL) {
     printf("  Unix: %s\n", args.unix_path);
   }
@@ -1007,6 +1235,9 @@ int main(int argc, char** argv) {
 #ifndef _WIN32
     signal(SIGTERM, _signal_handler);
     signal(SIGHUP, _signal_handler);
+    signal(SIGPIPE, SIG_IGN);
+#else
+    signal(SIGPIPE, SIG_IGN);
 #endif
 
     /* Apply metrics server URL from CLI/config file */
@@ -1015,7 +1246,7 @@ int main(int argc, char** argv) {
     }
 
     /* Start listening */
-    _start_listening(&server, args.host, args.port, args.quic_port, args.unix_path);
+    _start_listening(&server, &args);
 
     /* Main loop — wait until a signal clears running (shutdown) or a reload
        RPC sets g_restart_requested. Poll lightly (200 ms) so both flags are
