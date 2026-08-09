@@ -117,6 +117,8 @@ typedef struct {
   const char* ca_cert_path;
   const char* node_cert_path;
   const char* node_key_path;
+  const char* relay_url;
+  size_t      max_capacity_bytes;
   uint16_t    ws_port;
   uint16_t    wt_port;
   uint16_t    wt_h3_port;
@@ -150,6 +152,8 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "  --ca-cert <path>      CA certificate PEM path\n");
   fprintf(stderr, "  --node-cert <path>    Node certificate PEM path\n");
   fprintf(stderr, "  --node-key <path>     Node private key PEM path\n");
+  fprintf(stderr, "  --relay-url <url>     Relay server URL (host:port or offs://host:port)\n");
+  fprintf(stderr, "  --max-capacity-bytes <n>  Block cache capacity in bytes (default: 5368709120 = 5 GiB)\n");
   fprintf(stderr, "  --ws-port <port>      WebSocket port, 0 to disable (default: 0)\n");
   fprintf(stderr, "  --wt-port <port>      WebTransport (custom QUIC) port, 0 to disable (default: 0)\n");
   fprintf(stderr, "  --wt-h3-port <port>  HTTP/3 WebTransport port, 0 to disable (default: 0)\n");
@@ -233,6 +237,15 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
     cJSON* port = cJSON_GetObjectItem(network, "port");
     if (cJSON_IsNumber(port) && args->port == 23402) {
       args->port = (uint16_t)port->valueint;
+    }
+    cJSON* relay_url = cJSON_GetObjectItem(network, "relay-url");
+    if (cJSON_IsString(relay_url) && args->relay_url == NULL) {
+      args->relay_url = strdup(relay_url->valuestring);
+      if (args->relay_url == NULL) { cJSON_Delete(root); return -1; }
+    }
+    cJSON* max_cap = cJSON_GetObjectItem(network, "max-capacity-bytes");
+    if (cJSON_IsNumber(max_cap) && args->max_capacity_bytes == 0) {
+      args->max_capacity_bytes = (size_t)max_cap->valuedouble;
     }
   }
 
@@ -399,6 +412,10 @@ static int _parse_args(int argc, char** argv, offsd_args_t* args) {
       if (_arg_string_set(&args->node_cert_path, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--node-key") == 0 && i + 1 < argc) {
       if (_arg_string_set(&args->node_key_path, argv[++i]) != 0) return -1;
+    } else if (strcmp(argv[i], "--relay-url") == 0 && i + 1 < argc) {
+      if (_arg_string_set(&args->relay_url, argv[++i]) != 0) return -1;
+    } else if (strcmp(argv[i], "--max-capacity-bytes") == 0 && i + 1 < argc) {
+      args->max_capacity_bytes = (size_t)strtoull(argv[++i], NULL, 10);
     } else if (strcmp(argv[i], "--ws-port") == 0 && i + 1 < argc) {
       args->ws_port = (uint16_t)atoi(argv[++i]);
     } else if (strcmp(argv[i], "--wt-port") == 0 && i + 1 < argc) {
@@ -485,6 +502,7 @@ static void _free_args(offsd_args_t* args) {
   free((void*)args->ca_cert_path);
   free((void*)args->node_cert_path);
   free((void*)args->node_key_path);
+  free((void*)args->relay_url);
   free((void*)args->ws_cert_path);
   free((void*)args->ws_key_path);
   free((void*)args->wt_cert_path);
@@ -637,10 +655,17 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
     free(override_config);
   }
 
-  /* Block cache */
+  /* CLI --max-capacity-bytes overrides the config file / pending config so the
+   * block cache capacity is taken from the flag when present. */
+  if (args->max_capacity_bytes > 0) {
+    server->config.max_capacity_bytes = args->max_capacity_bytes;
+  }
+
+  /* Block cache — wire config.max_capacity_bytes so the cache is actually
+     bounded. Passing 0 here (the old behavior) left the cache unbounded. */
   server->block_cache = block_cache_create(server->config,
       (char*)args->cache_dir, standard, server->timer,
-      server->pool, NULL, 0);
+      server->pool, NULL, server->config.max_capacity_bytes);
   if (server->block_cache == NULL) {
     fprintf(stderr, "Failed to create block cache\n");
     timer_actor_destroy(server->timer);
@@ -1038,6 +1063,33 @@ static void _start_listening(offsd_server_t* server,
   if (server->unix_transport != NULL) {
     unix_transport_start(server->unix_transport);
     printf("Listening on unix://%s\n", args->unix_path);
+  }
+
+  /* Connect to the relay server for NAT traversal and server-reflexive address
+     discovery. The relay_url is "host:port" (optionally "offs://host:port").
+     The relay provides server-reflexive address discovery and forwards opaque
+     WIRE_RELAY_SEND envelopes between peers behind NAT. After relay-mediated
+     rendezvous, peers attempt UDP hole punching to establish a direct QUIC
+     path. See src/Network/relay_client.c. */
+  if (args->relay_url != NULL && server->network != NULL) {
+    const char* url = args->relay_url;
+    if (strncmp(url, "offs://", 7) == 0) url += 7;
+    const char* colon = strrchr(url, ':');
+    if (colon != NULL) {
+      char* host = strndup(url, (size_t)(colon - url));
+      if (host != NULL) {
+        uint16_t relay_port = (uint16_t)atoi(colon + 1);
+        if (relay_port > 0) {
+          if (network_connect_relay(server->network, host, relay_port) == 0) {
+            printf("Connected to relay %s:%u\n", host, relay_port);
+          } else {
+            fprintf(stderr, "Warning: failed to connect to relay %s:%u\n",
+                    host, relay_port);
+          }
+        }
+        free(host);
+      }
+    }
   }
 
   authority_load_peers(server->authority, server->network);
