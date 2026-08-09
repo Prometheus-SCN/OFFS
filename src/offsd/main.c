@@ -41,6 +41,7 @@
 #include "Util/allocator.h"
 #include "Util/log.h"
 #include "Util/mkdir_p.h"
+#include "Util/path_join.h"
 #include <cJSON.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -745,6 +746,13 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
       scheduler_pool_destroy(server->pool);
       return -1;
     }
+  }
+
+  /* Persist peer state (node ID, friends, hebbian weights, ring peers) across
+     restarts. The peer store path lives under the daemon's data directory so it
+     is backed up alongside pending config and other node-local state. */
+  if (args->data_dir != NULL) {
+    server->authority->peer_store_path = path_join(args->data_dir, "peer_store.cbor");
   }
 
   authority_init_local_id(server->authority);
