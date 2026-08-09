@@ -26,6 +26,8 @@ extern "C" {
 #include <cbor.h>
 #include "Platform/platform_time.h"
 #include "Util/rm_rf.h"
+#include "Network/peer_info.h"
+#include "Network/node_id.h"
 }
 
 #ifdef _WIN32
@@ -491,4 +493,78 @@ TEST_F(OffsdIntegrationTest, ConfigReloadAppliesPendingChange) {
   client_api_config_reload_response_destroy(&reload2_resp);
   cbor_decref(&reload2_response);
   cli_client_destroy(client);
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Peer state persistence regression tests
+ *
+ * offsd must set authority->peer_store_path so authority_save_peers (called on
+ * shutdown) and authority_load_peers (called on startup) actually run. Before
+ * the fix, peer_store_path was never set, so both functions were no-ops and
+ * the node ID, friend peers, hebbian weights, and ring peers were lost on
+ * every restart. These tests prove the file is written and loadable.
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+/* Build the path to peer_store.cbor inside the fixture's data_dir. */
+static std::string peer_store_path_for(const char* data_dir) {
+  return std::string(data_dir) + "/peer_store.cbor";
+}
+
+/* Returns 1 if the file at `path` exists and is non-empty, else 0. */
+static int file_exists_nonempty(const char* path) {
+  struct stat st;
+  if (stat(path, &st) != 0) return 0;
+  return st.st_size > 0 ? 1 : 0;
+}
+
+/* Regression: peer_store.cbor must be written to data_dir after the daemon
+ * shuts down. If offsd never set authority->peer_store_path, no file would
+ * appear (authority_save_peers returns -1 early). */
+TEST_F(OffsdIntegrationTest, PeerStoreWrittenOnShutdown) {
+  if (!daemon_ready) {
+    GTEST_SKIP() << "Daemon failed to start";
+  }
+
+  /* Sanity: the daemon is answering. */
+  EXPECT_TRUE(health_roundtrip(socket_path));
+
+  /* Stop the daemon. SIGTERM triggers the graceful shutdown path in offsd
+   * main, which calls authority_save_peers. daemon_proc_stop zeroes proc, so
+   * TearDown's later call is a no-op. */
+  daemon_proc_stop(&proc);
+
+  std::string peer_store = peer_store_path_for(data_dir);
+  EXPECT_TRUE(file_exists_nonempty(peer_store.c_str()))
+      << "peer_store.cbor was not written to data_dir — peer_store_path not wired up";
+}
+
+/* Regression: a restarted daemon must be able to load peer_store.cbor without
+ * crashing, proving the file is in a valid CBOR format that
+ * authority_load_peers can consume. */
+TEST_F(OffsdIntegrationTest, DaemonRestartsWithPersistedPeerStore) {
+  if (!daemon_ready) {
+    GTEST_SKIP() << "Daemon failed to start";
+  }
+
+  /* Stop the first instance so it writes peer_store.cbor. */
+  daemon_proc_stop(&proc);
+
+  std::string peer_store = peer_store_path_for(data_dir);
+  ASSERT_TRUE(file_exists_nonempty(peer_store.c_str()))
+      << "peer_store.cbor not written after first shutdown";
+
+  /* Restart the daemon with the same data_dir. authority_load_peers will read
+   * the file during startup. */
+  char* offsd_path = offsd_binary_path();
+  ASSERT_NE(offsd_path, nullptr);
+  int spawned = daemon_proc_start(&proc, offsd_path, socket_path,
+                                  cache_dir, data_dir);
+  free(offsd_path);
+  ASSERT_EQ(spawned, 1) << "failed to respawn offsd";
+
+  ASSERT_TRUE(wait_for_ready(socket_path, READY_TIMEOUT_MS))
+      << "restarted daemon did not become ready (peer_store load crashed?)";
+
+  EXPECT_TRUE(health_roundtrip(socket_path))
+      << "restarted daemon stopped answering after readiness";
 }
