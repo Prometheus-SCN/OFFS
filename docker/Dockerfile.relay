@@ -39,7 +39,7 @@ RUN mkdir build && cd build \
 ARG POLL_DANCER_ROOT=/build/poll-dancer
 COPY deps/poll-dancer /build/poll-dancer
 WORKDIR /build/poll-dancer
-RUN mkdir build && cd build \
+RUN rm -rf build && mkdir build && cd build \
     && cmake .. -DCMAKE_BUILD_TYPE=Release \
     && cmake --build . -j$(nproc) \
     && cp libpoll_dancer.a /usr/local/lib/
@@ -47,7 +47,7 @@ RUN mkdir build && cd build \
 # libcbor
 COPY deps/liboffs/deps/libcbor /build/libcbor
 WORKDIR /build/libcbor
-RUN mkdir build && cd build \
+RUN rm -rf build && mkdir build && cd build \
     && cmake .. -DCMAKE_BUILD_TYPE=Release \
     && cmake --build . -j$(nproc) \
     && cmake --install . --prefix /usr/local
@@ -55,7 +55,7 @@ RUN mkdir build && cd build \
 # Build liboffs (which produces the offs_relay target)
 COPY deps/liboffs /build/liboffs
 WORKDIR /build/liboffs
-RUN mkdir build && cd build \
+RUN rm -rf build && mkdir build && cd build \
     && cmake .. \
        -DCMAKE_BUILD_TYPE=Release \
        -DPOLL_DANCER_ROOT=/build/poll-dancer \
@@ -65,7 +65,7 @@ RUN mkdir build && cd build \
 FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libnuma1 \
+    libnuma1 openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy OpenSSL 3 and msquic from builder
@@ -77,10 +77,16 @@ RUN ldconfig
 # Copy the relay binary
 COPY --from=builder /build/liboffs/build/src/Network/Relay/offs_relay /usr/bin/offs_relay
 
-# Cert mount point
+# Cert mount point (overrides the baked-in self-signed cert when present)
 RUN mkdir -p /etc/offs/certs
 
-EXPOSE 14000
+# Entrypoint: generate a self-signed cert if none is mounted, then start the relay.
+# QUIC requires TLS even in allow_secure=false mode — the cert is used for
+# encryption only, never validated by peers unless --allow-secure is set.
+COPY docker/relay-entrypoint.sh /usr/local/bin/relay-entrypoint.sh
+RUN chmod +x /usr/local/bin/relay-entrypoint.sh
 
-ENTRYPOINT ["offs_relay"]
+EXPOSE 14000/udp
+
+ENTRYPOINT ["/usr/local/bin/relay-entrypoint.sh"]
 CMD ["--host", "0.0.0.0", "--port", "14000"]
