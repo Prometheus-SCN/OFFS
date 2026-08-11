@@ -14,6 +14,9 @@
 #include "ClientAPI/HTTP/off_routes.h"
 #include "ClientAPI/HTTP/block_routes.h"
 #include "ClientAPI/HTTP/cors.h"
+#include "ClientAPI/HTTP/http_request.h"
+#include "ClientAPI/HTTP/http_response.h"
+#include "ClientAPI/HTTP/http_headers.h"
 #include "ClientAPI/Unix/unix_transport.h"
 #include "ClientAPI/WS/ws_transport.h"
 #include "ClientAPI/WT/wt_transport.h"
@@ -34,6 +37,7 @@
 #include "Configuration/config.h"
 #include "Configuration/config_pending.h"
 #include "Platform/platform.h"
+#include "Platform/platform_random.h"
 #include "Update/update_actor.h"
 #include "Update/update_check.h"
 #include "Version/version.h"
@@ -42,6 +46,7 @@
 #include "Util/log.h"
 #include "Util/mkdir_p.h"
 #include "Util/path_join.h"
+#include "Util/bcrypt.h"
 #include <cJSON.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,6 +102,60 @@ static void _request_restart(void* user_data) {
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Soft auth middleware — sets is_authenticated=1 on valid Bearer tokens but
+ * does NOT reject requests without one. This lets /health and /offsystem stay
+ * open (so the demo can upload without a key) while /peer/* routes — which
+ * check is_authenticated themselves via _check_auth in peer_routes.c — can
+ * require the key. The hard auth_middleware in auth_middleware.c rejects
+ * unauthenticated requests entirely, which would break the demo.
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+typedef struct {
+  char* bcrypt_hash;  /* $2b$... hash copied from config.api_key_hash */
+} soft_auth_ctx_t;
+
+static int _soft_auth_handler(http_request_t* request, http_response_t* response,
+                              void* user_data) {
+  (void)response;
+  soft_auth_ctx_t* ctx = (soft_auth_ctx_t*)user_data;
+  if (ctx == NULL || ctx->bcrypt_hash == NULL) return 0;
+
+  const char* auth_header = http_headers_get(&request->headers, "Authorization");
+  if (auth_header == NULL) return 0;
+  if (strncmp(auth_header, "Bearer ", 7) != 0) return 0;
+
+  const char* token = auth_header + 7;
+  if (*token == '\0') return 0;
+
+  if (bcrypt_check(token, ctx->bcrypt_hash) == 0) {
+    request->is_authenticated = 1;
+  }
+  return 0;
+}
+
+static void _soft_auth_ctx_destroy(soft_auth_ctx_t* ctx) {
+  if (ctx == NULL) return;
+  if (ctx->bcrypt_hash != NULL) free(ctx->bcrypt_hash);
+  free(ctx);
+}
+
+/* Generate a random 32-byte hex API key (64 chars + NUL). Returns a malloc'd
+   string the caller owns, or NULL on failure. */
+static char* _generate_random_api_key(void) {
+  uint8_t bytes[32];
+  if (platform_random_bytes(bytes, sizeof(bytes)) != 0) return NULL;
+  char* key = (char*)malloc(sizeof(bytes) * 2 + 1);
+  if (key == NULL) return NULL;
+  static const char hex[] = "0123456789abcdef";
+  for (size_t i = 0; i < sizeof(bytes); i++) {
+    key[i * 2]     = hex[bytes[i] >> 4];
+    key[i * 2 + 1] = hex[bytes[i] & 0x0f];
+  }
+  key[sizeof(bytes) * 2] = '\0';
+  return key;
+}
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  * CLI argument structure — holds everything parsed from flags + config file
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
@@ -119,6 +178,7 @@ typedef struct {
   const char* node_key_path;
   const char* relay_url;
   size_t      max_capacity_bytes;
+  const char* api_key;
   uint16_t    ws_port;
   uint16_t    wt_port;
   uint16_t    wt_h3_port;
@@ -154,6 +214,8 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "  --node-key <path>     Node private key PEM path\n");
   fprintf(stderr, "  --relay-url <url>     Relay server URL (host:port or offs://host:port)\n");
   fprintf(stderr, "  --max-capacity-bytes <n>  Block cache capacity in bytes (default: 5368709120 = 5 GiB)\n");
+  fprintf(stderr, "  --api-key <key>       API key for /peer/* routes. If omitted, a random key\n");
+  fprintf(stderr, "                       is generated and printed to stdout on startup.\n");
   fprintf(stderr, "  --ws-port <port>      WebSocket port, 0 to disable (default: 0)\n");
   fprintf(stderr, "  --wt-port <port>      WebTransport (custom QUIC) port, 0 to disable (default: 0)\n");
   fprintf(stderr, "  --wt-h3-port <port>  HTTP/3 WebTransport port, 0 to disable (default: 0)\n");
@@ -246,6 +308,17 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
     cJSON* max_cap = cJSON_GetObjectItem(network, "max-capacity-bytes");
     if (cJSON_IsNumber(max_cap) && args->max_capacity_bytes == 0) {
       args->max_capacity_bytes = (size_t)max_cap->valuedouble;
+    }
+  }
+
+  /* [auth] section — explicit API key for /peer/* routes. If absent, offsd
+     generates a random key on startup and prints it to stdout. */
+  cJSON* auth_section = cJSON_GetObjectItem(root, "auth");
+  if (auth_section != NULL) {
+    cJSON* api_key = cJSON_GetObjectItem(auth_section, "api-key");
+    if (cJSON_IsString(api_key) && args->api_key == NULL) {
+      args->api_key = strdup(api_key->valuestring);
+      if (args->api_key == NULL) { cJSON_Delete(root); return -1; }
     }
   }
 
@@ -416,6 +489,8 @@ static int _parse_args(int argc, char** argv, offsd_args_t* args) {
       if (_arg_string_set(&args->relay_url, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--max-capacity-bytes") == 0 && i + 1 < argc) {
       args->max_capacity_bytes = (size_t)strtoull(argv[++i], NULL, 10);
+    } else if (strcmp(argv[i], "--api-key") == 0 && i + 1 < argc) {
+      if (_arg_string_set(&args->api_key, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--ws-port") == 0 && i + 1 < argc) {
       args->ws_port = (uint16_t)atoi(argv[++i]);
     } else if (strcmp(argv[i], "--wt-port") == 0 && i + 1 < argc) {
@@ -503,6 +578,7 @@ static void _free_args(offsd_args_t* args) {
   free((void*)args->node_cert_path);
   free((void*)args->node_key_path);
   free((void*)args->relay_url);
+  free((void*)args->api_key);
   free((void*)args->ws_cert_path);
   free((void*)args->ws_key_path);
   free((void*)args->wt_cert_path);
@@ -661,6 +737,64 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
     server->config.max_capacity_bytes = args->max_capacity_bytes;
   }
 
+  /* API key for /peer/* routes. If --api-key was not provided (and no [auth]
+     section set it), generate a random one and print it to stdout. Either way,
+     hash the plaintext key with bcrypt into config.api_key_hash so the soft
+     auth middleware can validate incoming Bearer tokens. */
+  char* api_key_plaintext = NULL;
+  if (args->api_key != NULL) {
+    api_key_plaintext = strdup(args->api_key);
+    if (api_key_plaintext == NULL) {
+      fprintf(stderr, "Out of memory copying api_key\n");
+      timer_actor_destroy(server->timer);
+      scheduler_pool_stop(server->pool);
+      scheduler_pool_destroy(server->pool);
+      return -1;
+    }
+  } else {
+    api_key_plaintext = _generate_random_api_key();
+    if (api_key_plaintext == NULL) {
+      fprintf(stderr, "Failed to generate random API key\n");
+      timer_actor_destroy(server->timer);
+      scheduler_pool_stop(server->pool);
+      scheduler_pool_destroy(server->pool);
+      return -1;
+    }
+  }
+  char bcrypt_hash[64];
+  if (bcrypt_generate(api_key_plaintext, 12, bcrypt_hash, sizeof(bcrypt_hash)) != 0) {
+    fprintf(stderr, "Failed to hash API key\n");
+    free(api_key_plaintext);
+    timer_actor_destroy(server->timer);
+    scheduler_pool_stop(server->pool);
+    scheduler_pool_destroy(server->pool);
+    return -1;
+  }
+  if (server->config.api_key_hash != NULL) {
+    free(server->config.api_key_hash);
+  }
+  server->config.api_key_hash = strdup(bcrypt_hash);
+  if (server->config.api_key_hash == NULL) {
+    fprintf(stderr, "Out of memory storing api_key_hash\n");
+    free(api_key_plaintext);
+    timer_actor_destroy(server->timer);
+    scheduler_pool_stop(server->pool);
+    scheduler_pool_destroy(server->pool);
+    return -1;
+  }
+  if (args->api_key == NULL) {
+    printf("Generated API key for /peer/* routes: %s\n", api_key_plaintext);
+    printf("Pass this key to clients as: Authorization: Bearer %s\n", api_key_plaintext);
+  } else {
+    printf("Using configured API key for /peer/* routes\n");
+  }
+  fflush(stdout);
+  /* The plaintext is no longer needed after printing — the soft-auth middleware
+     validates incoming Bearer tokens against the bcrypt hash in
+     config.api_key_hash. Zero and free it now. */
+  memset(api_key_plaintext, 0, strlen(api_key_plaintext));
+  free(api_key_plaintext);
+
   /* Block cache — wire config.max_capacity_bytes so the cache is actually
      bounded. Passing 0 here (the old behavior) left the cache unbounded. */
   server->block_cache = block_cache_create(server->config,
@@ -813,6 +947,21 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
 
   /* Route registration (HTTP only if enabled) */
   if (server->http_server != NULL) {
+    /* Install soft-auth middleware that sets is_authenticated=1 on valid
+       Bearer tokens but does NOT reject unauthenticated requests. This lets
+       /health and /offsystem stay open (demo uploads work) while /peer/* routes
+       require the key via their own _check_auth. */
+    soft_auth_ctx_t* soft_auth = (soft_auth_ctx_t*)malloc(sizeof(soft_auth_ctx_t));
+    if (soft_auth != NULL) {
+      soft_auth->bcrypt_hash = strdup(server->config.api_key_hash);
+      if (soft_auth->bcrypt_hash != NULL) {
+        http_server_use(server->http_server, _soft_auth_handler, soft_auth,
+                        (void (*)(void*))_soft_auth_ctx_destroy);
+      } else {
+        free(soft_auth);
+      }
+    }
+
     off_routes_register(server->http_server, server->pool,
                         server->block_cache, server->ofd_cache,
                         server->tuple_cache, NULL, NULL,
@@ -821,7 +970,7 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
                           server->block_cache, NULL, NULL);
     health_routes_register(server->http_server, &server->health_ctx);
     peer_routes_register(server->http_server, &server->node,
-                         &server->config, NULL);
+                         &server->config, "enabled");
     config_routes_register(server->http_server, &server->node,
                            &server->config, args->data_dir,
                            _request_restart, NULL);
