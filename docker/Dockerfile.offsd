@@ -1,0 +1,92 @@
+# Multi-stage build for the OFFS daemon (offsd)
+#
+# Build:  docker build -f docker/Dockerfile.offsd -t offs-offsd .
+# Run:    docker run -p 23401:23401/udp -p 23402:23402 \
+#           -v /path/to/data:/data \
+#           -v /path/to/certs:/etc/offs/certs:ro \
+#           offs-offsd
+#
+# Without mounted certs, a self-signed node cert is generated on first start.
+# The cache and peer_store persist under /data (mount a volume for persistence).
+
+# --- Builder stage: compile offsd and all dependencies ---
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git libnuma-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# OpenSSL 3 from source (needed by msquic)
+COPY deps/liboffs/deps/msquic/submodules/openssl /build/openssl
+WORKDIR /build/openssl
+RUN ./config --prefix=/usr/local --libdir=lib \
+    && make -j$(nproc) \
+    && make install_sw \
+    && ldconfig
+
+# msquic from source
+COPY deps/liboffs/deps/msquic /build/msquic
+WORKDIR /build/msquic
+RUN mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cmake --install . --prefix /usr/local
+
+# poll-dancer
+ARG POLL_DANCER_ROOT=/build/poll-dancer
+COPY deps/poll-dancer /build/poll-dancer
+WORKDIR /build/poll-dancer
+RUN rm -rf build && mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cp libpoll_dancer.a /usr/local/lib/
+
+# libcbor
+COPY deps/liboffs/deps/libcbor /build/libcbor
+WORKDIR /build/libcbor
+RUN rm -rf build && mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cmake --install . --prefix /usr/local
+
+# Build the OFFS project (produces offsd target)
+COPY . /build/offs
+WORKDIR /build/offs
+RUN rm -rf build && mkdir build && cd build \
+    && cmake .. \
+       -DCMAKE_BUILD_TYPE=Release \
+       -DPOLL_DANCER_ROOT=/build/poll-dancer \
+    && cmake --build . -j$(nproc) --target offsd
+
+# --- Runtime stage: minimal image with only what's needed ---
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnuma1 openssl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy OpenSSL 3 and msquic from builder
+COPY --from=builder /usr/local/lib/libssl.so.3 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libcrypto.so.3 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libmsquic.so* /usr/local/lib/
+RUN ldconfig
+
+# Copy the offsd binary
+COPY --from=builder /build/offs/build/offsd /usr/bin/offsd
+
+# Cert mount point and data directories
+RUN mkdir -p /etc/offs/certs /data/cache /data/data
+
+# Entrypoint that generates a self-signed node cert if none is mounted
+COPY docker/offsd-entrypoint.sh /usr/local/bin/offsd-entrypoint.sh
+RUN chmod +x /usr/local/bin/offsd-entrypoint.sh
+
+EXPOSE 23401/udp
+EXPOSE 23402/tcp
+
+ENTRYPOINT ["/usr/local/bin/offsd-entrypoint.sh"]
+CMD ["--host", "0.0.0.0", "--quic-port", "23401", "--port", "23402", \
+     "--cache-dir", "/data/cache", "--data-dir", "/data/data", \
+     "--max-capacity-bytes", "107374182400"]
