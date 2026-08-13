@@ -32,9 +32,20 @@ if [ ! -f "${CERT_PATH}" ] || [ ! -f "${KEY_PATH}" ]; then
     -subj "/CN=offs-offsd" >/dev/null 2>&1
 fi
 
+# Build the offsd command. RELAY_URL and MAX_CAPACITY_BYTES can be set via
+# environment variables (avoids --command-line quoting issues with az CLI).
+EXTRA_ARGS=""
+if [ -n "${RELAY_URL}" ]; then
+  EXTRA_ARGS="${EXTRA_ARGS} --relay-url ${RELAY_URL}"
+fi
+if [ -n "${MAX_CAPACITY_BYTES}" ]; then
+  EXTRA_ARGS="${EXTRA_ARGS} --max-capacity-bytes ${MAX_CAPACITY_BYTES}"
+fi
+
 exec offsd --foreground \
   --node-cert "${CERT_PATH}" \
   --node-key "${KEY_PATH}" \
   --cache-dir /data/cache \
   --data-dir /data/data \
+  ${EXTRA_ARGS} \
   "$@"
