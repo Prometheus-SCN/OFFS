@@ -964,7 +964,7 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
 
     off_routes_register(server->http_server, server->pool,
                         server->block_cache, server->ofd_cache,
-                        server->tuple_cache, NULL, NULL,
+                        server->tuple_cache, server->network, NULL, NULL,
                         &server->open_stream_count);
     block_routes_register(server->http_server, server->pool,
                           server->block_cache, NULL, NULL);
