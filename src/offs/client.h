@@ -28,4 +28,16 @@ void cli_client_disconnect(cli_client_t* client);
    Returns the response item (caller must cbor_decref), or NULL on error. */
 cbor_item_t* cli_client_send(cli_client_t* client, cbor_item_t* request);
 
+/* Send a single CBOR frame without reading a response. Used by streaming
+   commands (put, get) that send multiple frames before reading the final
+   response. Returns 0 on success, -1 on error. The caller still owns
+   *frame and must cbor_decref it. */
+int cli_client_send_frame(cli_client_t* client, cbor_item_t* frame);
+
+/* Read a single CBOR frame from the daemon (no request sent first). Used
+   by streaming commands to read the server's response frames in a loop.
+   Returns the parsed CBOR item (caller must cbor_decref), or NULL on error
+   or connection close. */
+cbor_item_t* cli_client_recv_frame(cli_client_t* client);
+
 #endif /* OFFS_CLIENT_H */

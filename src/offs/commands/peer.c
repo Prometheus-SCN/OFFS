@@ -5,6 +5,7 @@
 #include "../client.h"
 #include "../l10n/en.h"
 #include "ClientAPI/client_api_wire.h"
+#include "Util/base58.h"
 #include <cbor.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,8 +30,18 @@ int cmd_peer(int argc, char** argv, cli_client_t* client) {
         client_api_peer_info_response_t peer_resp;
         memset(&peer_resp, 0, sizeof(peer_resp));
         if (client_api_peer_info_response_decode(response, &peer_resp) == 0) {
-          printf("%s\n", L10N_PEER_INFO_PROMPT);
-          printf("  Data: %.*s\n", (int)peer_resp.data_size, peer_resp.data);
+          size_t b58_len = base58_encoded_length(peer_resp.data_size) + 1;
+          char* b58 = (char*)malloc(b58_len);
+          if (b58 != NULL) {
+            int enc_rc = base58_encode(peer_resp.data, peer_resp.data_size,
+                              b58, b58_len);
+            if (enc_rc > 0) {
+              b58[enc_rc] = '\0';
+              printf("%s\n", L10N_PEER_INFO_PROMPT);
+              printf("  Data: %s\n", b58);
+            }
+            free(b58);
+          }
           client_api_peer_info_response_destroy(&peer_resp);
         }
       }
@@ -70,7 +81,7 @@ int cmd_peer(int argc, char** argv, cli_client_t* client) {
 
     client_api_peer_connect_t peer_con;
     memset(&peer_con, 0, sizeof(peer_con));
-    peer_con.format = 0;
+    peer_con.format = 1;  /* base58 text — peer info outputs base58 */
     peer_con.data = (uint8_t*)argv[1];
     peer_con.data_size = strlen(argv[1]);
 
@@ -78,10 +89,23 @@ int cmd_peer(int argc, char** argv, cli_client_t* client) {
     cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
-    if (response != NULL) {
-      cbor_decref(&response);
-      printf("%s\n", L10N_OK);
+    if (response == NULL) {
+      fprintf(stderr, "%s\n", L10N_DAEMON_UNREACHABLE);
+      return 1;
     }
+    uint8_t type = client_api_wire_get_type(response);
+    if (type == CLIENT_API_ERROR) {
+      client_api_error_t err_msg;
+      memset(&err_msg, 0, sizeof(err_msg));
+      if (client_api_error_decode(response, &err_msg) == 0) {
+        fprintf(stderr, "%s: %s\n", L10N_ERROR, err_msg.message);
+        client_api_error_destroy(&err_msg);
+      }
+      cbor_decref(&response);
+      return 1;
+    }
+    cbor_decref(&response);
+    printf("%s\n", L10N_OK);
     return 0;
   }
 

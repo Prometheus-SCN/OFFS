@@ -132,7 +132,7 @@ static int _handle_report(http_request_t* request, http_response_t* response,
            metrics.peer_snapshot_count);
 
   http_response_set_status(response, HTTP_STATUS_OK);
-  http_response_write(response, "{\"status\":\"ok\"}", 14);
+  http_response_write(response, "{\"status\":\"ok\"}", 15);
   http_response_end(response);
   return 1;
 }
@@ -216,6 +216,120 @@ static int _handle_status(http_request_t* request, http_response_t* response,
   return 1;
 }
 
+/* GET /metrics — emits Prometheus text exposition format aggregating
+ * the latest reported metrics from every tracked node. */
+static int _handle_metrics(http_request_t* request, http_response_t* response,
+                           void* user_data) {
+  (void)user_data;
+  if (request->method != HTTP_GET ||
+      strcmp(request->path, "/metrics") != 0) {
+    return 0;
+  }
+
+  /* Aggregate the latest snapshots across all tracked nodes. */
+  size_t total_peers = 0;
+  size_t total_ring_entries = 0;
+  size_t total_connections = 0;
+  double hebbian_sum = 0.0;
+  size_t hebbian_samples = 0;
+  uint64_t total_rpc_calls = 0;
+  uint64_t total_rpc_success = 0;
+  uint64_t total_rpc_failure = 0;
+  uint64_t total_rate_limit_accepted = 0;
+  uint64_t total_rate_limit_rejected = 0;
+
+  for (int index = 0; index < g_node_count; index++) {
+    node_report_t* entry = &g_nodes[index];
+    total_peers += entry->latest.peer_snapshot_count;
+    total_ring_entries += entry->latest.ring_entry_count;
+    total_connections += entry->latest.total_connections;
+    hebbian_sum += (double)entry->latest.avg_hebbian_weight;
+    hebbian_samples++;
+    for (int rpc_index = 0; rpc_index < PEER_RPC_TYPE_COUNT; rpc_index++) {
+      /* rpc_count/rpc_success/rpc_failure live on peer snapshots, but
+       * topology_metrics_t also aggregates total_rpc_calls per type. */
+      total_rpc_calls += entry->latest.total_rpc_calls[rpc_index];
+    }
+    for (int rpc_index = 0; rpc_index < RPC_TYPE_COUNT; rpc_index++) {
+      total_rate_limit_accepted +=
+        entry->latest.total_rate_limit_accepted[rpc_index];
+      total_rate_limit_rejected +=
+        entry->latest.total_rate_limit_rejected[rpc_index];
+    }
+    for (size_t peer_index = 0;
+         peer_index < entry->latest.peer_snapshot_count;
+         peer_index++) {
+      const peer_metrics_snapshot_t* snap =
+        &entry->latest.peer_snapshots[peer_index];
+      for (int rpc_index = 0; rpc_index < PEER_RPC_TYPE_COUNT; rpc_index++) {
+        total_rpc_success += snap->rpc_success[rpc_index];
+        total_rpc_failure += snap->rpc_failure[rpc_index];
+      }
+    }
+  }
+
+  double avg_hebbian = (hebbian_samples > 0)
+    ? (hebbian_sum / (double)hebbian_samples)
+    : 0.0;
+
+  /* Emit Prometheus text exposition format. */
+  char body[4096];
+  int length = snprintf(body, sizeof(body),
+    "# HELP offs_nodes_total Total number of tracked nodes reporting metrics\n"
+    "# TYPE offs_nodes_total gauge\n"
+    "offs_nodes_total %d\n"
+    "# HELP offs_peers_total Total number of known peers across all nodes\n"
+    "# TYPE offs_peers_total gauge\n"
+    "offs_peers_total %zu\n"
+    "# HELP offs_ring_entries Total ring set entries across all nodes\n"
+    "# TYPE offs_ring_entries gauge\n"
+    "offs_ring_entries %zu\n"
+    "# HELP offs_connections_total Total active connections across all nodes\n"
+    "# TYPE offs_connections_total gauge\n"
+    "offs_connections_total %zu\n"
+    "# HELP offs_avg_hebbian_weight Average Hebbian weight across nodes\n"
+    "# TYPE offs_avg_hebbian_weight gauge\n"
+    "offs_avg_hebbian_weight %f\n"
+    "# HELP offs_rpc_calls_total Total RPC calls across all nodes\n"
+    "# TYPE offs_rpc_calls_total counter\n"
+    "offs_rpc_calls_total %llu\n"
+    "# HELP offs_rpc_success_total Total successful RPC calls across all nodes\n"
+    "# TYPE offs_rpc_success_total counter\n"
+    "offs_rpc_success_total %llu\n"
+    "# HELP offs_rpc_failure_total Total failed RPC calls across all nodes\n"
+    "# TYPE offs_rpc_failure_total counter\n"
+    "offs_rpc_failure_total %llu\n"
+    "# HELP offs_rate_limit_accepted_total Total rate-limited accepted requests\n"
+    "# TYPE offs_rate_limit_accepted_total counter\n"
+    "offs_rate_limit_accepted_total %llu\n"
+    "# HELP offs_rate_limit_rejected_total Total rate-limited rejected requests\n"
+    "# TYPE offs_rate_limit_rejected_total counter\n"
+    "offs_rate_limit_rejected_total %llu\n",
+    g_node_count,
+    total_peers,
+    total_ring_entries,
+    total_connections,
+    avg_hebbian,
+    (unsigned long long)total_rpc_calls,
+    (unsigned long long)total_rpc_success,
+    (unsigned long long)total_rpc_failure,
+    (unsigned long long)total_rate_limit_accepted,
+    (unsigned long long)total_rate_limit_rejected);
+
+  if (length < 0 || (size_t)length >= sizeof(body)) {
+    http_response_set_status(response, HTTP_STATUS_INTERNAL_SERVER_ERROR);
+    http_response_end(response);
+    return 1;
+  }
+
+  http_response_set_status(response, HTTP_STATUS_OK);
+  http_response_set_header(response, "Content-Type",
+                           "text/plain; version=0.0.4");
+  http_response_write(response, body, (size_t)length);
+  http_response_end(response);
+  return 1;
+}
+
 int main(int argc, char** argv) {
   uint16_t port = 9090;
   const char* host = "0.0.0.0";
@@ -254,6 +368,7 @@ int main(int argc, char** argv) {
 
   http_server_use(server, _handle_report, NULL, NULL);
   http_server_use(server, _handle_status, NULL, NULL);
+  http_server_use(server, _handle_metrics, NULL, NULL);
 
   http_server_listen(server);
 

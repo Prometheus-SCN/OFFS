@@ -1,20 +1,19 @@
-# Multi-stage build for the OFFS relay server (offs_relay)
+# Multi-stage build for the OFFS daemon (offsd)
 #
-# Build:  docker build -f docker/Dockerfile.relay -t offs-relay .
-# Run:    docker run -p 14000:14000 offs-relay
+# Build:  docker build -f docker/Dockerfile.offsd -t offs-offsd .
+# Run:    docker run -p 23401:23401/udp -p 23402:23402 \
+#           -v /path/to/data:/data \
+#           -v /path/to/certs:/etc/offs/certs:ro \
+#           offs-offsd
 #
-# With TLS certs:
-#   docker run -p 14000:14000 \
-#     -v /path/to/certs:/etc/offs/certs:ro \
-#     offs-relay --cert /etc/offs/certs/relay.pem \
-#                --key /etc/offs/certs/relay-key.pem
+# Without mounted certs, a self-signed node cert is generated on first start.
+# The cache and peer_store persist under /data (mount a volume for persistence).
 
-# --- Builder stage: compile offs_relay and all dependencies ---
+# --- Builder stage: compile offsd and all dependencies ---
 FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git libnuma-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -52,14 +51,14 @@ RUN rm -rf build && mkdir build && cd build \
     && cmake --build . -j$(nproc) \
     && cmake --install . --prefix /usr/local
 
-# Build liboffs (which produces the offs_relay target)
-COPY deps/liboffs /build/liboffs
-WORKDIR /build/liboffs
+# Build the OFFS project (produces offsd target)
+COPY . /build/offs
+WORKDIR /build/offs
 RUN rm -rf build && mkdir build && cd build \
     && cmake .. \
        -DCMAKE_BUILD_TYPE=Release \
        -DPOLL_DANCER_ROOT=/build/poll-dancer \
-    && cmake --build . -j$(nproc) --target offs_relay
+    && cmake --build . -j$(nproc) --target offsd
 
 # --- Runtime stage: minimal image with only what's needed ---
 FROM ubuntu:24.04
@@ -74,19 +73,20 @@ COPY --from=builder /usr/local/lib/libcrypto.so.3 /usr/local/lib/
 COPY --from=builder /usr/local/lib/libmsquic.so* /usr/local/lib/
 RUN ldconfig
 
-# Copy the relay binary
-COPY --from=builder /build/liboffs/build/src/Network/Relay/offs_relay /usr/bin/offs_relay
+# Copy the offsd binary
+COPY --from=builder /build/offs/build/offsd /usr/bin/offsd
 
-# Cert mount point (overrides the baked-in self-signed cert when present)
-RUN mkdir -p /etc/offs/certs
+# Cert mount point and data directories
+RUN mkdir -p /etc/offs/certs /data/cache /data/data
 
-# Entrypoint: generate a self-signed cert if none is mounted, then start the relay.
-# QUIC requires TLS even in allow_secure=false mode — the cert is used for
-# encryption only, never validated by peers unless --allow-secure is set.
-COPY docker/relay-entrypoint.sh /usr/local/bin/relay-entrypoint.sh
-RUN chmod +x /usr/local/bin/relay-entrypoint.sh
+# Entrypoint that generates a self-signed node cert if none is mounted
+COPY docker/offsd-entrypoint.sh /usr/local/bin/offsd-entrypoint.sh
+RUN chmod +x /usr/local/bin/offsd-entrypoint.sh
 
-EXPOSE 14000/udp
+EXPOSE 23401/udp
+EXPOSE 23402/tcp
 
-ENTRYPOINT ["/usr/local/bin/relay-entrypoint.sh"]
-CMD ["--host", "0.0.0.0", "--port", "14000"]
+ENTRYPOINT ["/usr/local/bin/offsd-entrypoint.sh"]
+CMD ["--host", "0.0.0.0", "--quic-port", "23401", "--port", "23402", \
+     "--cache-dir", "/data/cache", "--data-dir", "/data/data", \
+     "--max-capacity-bytes", "107374182400"]

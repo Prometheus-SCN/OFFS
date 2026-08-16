@@ -12,6 +12,52 @@
 #include <stdlib.h>
 #include <string.h>
 
+static void _print_config_help(void) {
+  printf(
+    "offs config — manage daemon configuration\n\n"
+    "Usage: offs config <subcommand> [args]\n\n"
+    "Subcommands:\n"
+    "  show                              Print the current daemon configuration\n"
+    "  get <field>                       Print the current value of one field\n"
+    "  set <field>=<value>               Stage a field change (restart to apply)\n"
+    "  add <field> <value>               Same as set, value is a separate arg\n"
+    "  remove <field>                    Revert a field to its default (stages null)\n"
+    "  set-auth <hash>                   Set api_key_hash to a pre-hashed bcrypt value\n"
+    "  generate-auth <key> [--cost N]    Hash a key with bcrypt and set api_key_hash\n"
+    "  reload                            Trigger an in-process config reload\n"
+    "  help, --help                      Show this help\n\n"
+    "Staged changes write to {data_dir}/pending_config.json and only take effect\n"
+    "after a daemon restart. 'reload' applies certain fields without a restart.\n\n"
+    "Settable fields (type): description\n"
+    "  String fields:\n"
+    "    api_key_hash         bcrypt hash ($2b$ prefix) for client auth; NULL = disabled\n"
+    "    https_cert_path       Path to the HTTPS server certificate PEM\n"
+    "    https_key_path        Path to the HTTPS server private key PEM\n"
+    "    tcp_tls_cert_path     Path to the TCP transport TLS certificate PEM\n"
+    "    tcp_tls_key_path      Path to the TCP transport TLS private key PEM\n\n"
+    "  Bool fields (set to true/false or 1/0):\n"
+    "    http_enabled          Enable the HTTP server\n"
+    "    https_enabled         Enable the HTTPS server\n"
+    "    unix_enabled          Enable the Unix socket transport\n"
+    "    tcp_enabled           Enable the raw TCP transport\n"
+    "    ws_enabled             Enable the WebSocket transport\n"
+    "    wt_enabled             Enable the WebTransport (QUIC) transport\n"
+    "    tcp_tls_enabled       Enable TLS on the TCP transport\n\n"
+    "  Number fields (integer):\n"
+    "    cache_size            Number of block sections held in the in-memory round-robin\n"
+    "    max_snapshots         Max snapshot files retained by the persistent index\n"
+    "    max_wals              Max WAL files retained by the persistent index\n"
+    "    max_capacity_bytes    Max bytes the block cache will hold (0 = disabled);\n"
+    "                          the pre-flight PUT check rejects oversized uploads\n"
+    "                          when this is > 0 and wired to block_cache_create\n"
+    "    scheduler_thread_count  Worker threads in the scheduler pool (0 = auto)\n"
+    "    http_port             TCP port for the HTTP server (0 = disabled)\n"
+    "    https_port            TCP port for the HTTPS server (0 = disabled)\n"
+    "    tcp_port              TCP port for the raw TCP transport (0 = disabled)\n"
+    "    ws_port               TCP port for the WebSocket transport (0 = disabled)\n"
+    "    wt_port               UDP port for the WebTransport (0 = disabled)\n");
+}
+
 /* A bcrypt hash is "$2b$" + 2-digit cost + "$" + 22 salt chars + 31 hash chars
    = 60 characters. Accept the $2a$/$2b$/$2y$ variants bcrypt_check understands. */
 #define BCRYPT_HASH_LEN 60
@@ -234,6 +280,11 @@ int cmd_config(int argc, char** argv, cli_client_t* client) {
   const char* subcommand = argv[0];
   char** rest = argv + 1;  /* remaining args for the subcommand */
   int rest_argc = argc - 1;
+
+  if (strcmp(subcommand, "help") == 0 || strcmp(subcommand, "--help") == 0) {
+    _print_config_help();
+    return 0;
+  }
 
   if (strcmp(subcommand, "show") == 0) {
     return _cmd_show(client);
