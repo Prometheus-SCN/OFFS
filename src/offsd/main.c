@@ -828,6 +828,10 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
       scheduler_pool_destroy(server->pool);
       return -1;
     }
+    /* Wire the HTTP idle/hard timeouts from the config (slowloris defense). */
+    http_server_set_timeouts(server->http_server,
+                             server->config.http_idle_timeout_ms,
+                             server->config.http_hard_timeout_ms);
   }
 
   /* Start time tracking */

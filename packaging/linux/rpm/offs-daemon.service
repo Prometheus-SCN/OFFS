@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/offs-daemon
+ExecStart=/usr/bin/offs-daemon --foreground
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=10
