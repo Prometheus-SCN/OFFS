@@ -170,6 +170,7 @@ typedef struct {
   const char* pid_file;
   int         worker_count;
   int         foreground;
+  const char* log_file;
   const char* log_level_str;
   int         log_structured;
   const char* metrics_server_url;
@@ -206,6 +207,7 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "  --pid-file <path>    PID file path\n");
   fprintf(stderr, "  --workers <n>        Worker count, 0=auto (default: 0)\n");
   fprintf(stderr, "  --foreground         Run in foreground (do not daemonize)\n");
+  fprintf(stderr, "  --log-file <path>    Redirect daemonized stdout/stderr to this file\n");
   fprintf(stderr, "  --log-level <lvl>    Log level: trace, debug, info, warn, error, fatal (default: info)\n");
   fprintf(stderr, "  --log-structured     Enable key=value structured log output\n");
   fprintf(stderr, "  --metrics-server <url>  Metrics server URL for topology reports\n");
@@ -473,6 +475,8 @@ static int _parse_args(int argc, char** argv, offsd_args_t* args) {
       if (args->worker_count < 0) args->worker_count = 0;
     } else if (strcmp(argv[i], "--foreground") == 0) {
       args->foreground = 1;
+    } else if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc) {
+      args->log_file = argv[++i];
     } else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
       args->log_level_str = argv[++i];
     } else if (strcmp(argv[i], "--log-structured") == 0) {
@@ -589,7 +593,7 @@ static void _free_args(offsd_args_t* args) {
  * Daemonization (double-fork)
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
-static int _daemonize(void) {
+static int _daemonize(const char* log_file) {
 #ifdef _WIN32
   /* Windows services are managed by the SCM (service_windows.c); the daemon
    * binary runs in the foreground under the service host. No fork/setsid. */
@@ -625,14 +629,31 @@ static int _daemonize(void) {
     return -1;
   }
 
+  /* Redirect stdin to /dev/null always */
   int dev_null = open("/dev/null", O_RDWR);
   if (dev_null < 0) {
     fprintf(stderr, "Failed to open /dev/null: %s\n", strerror(errno));
     return -1;
   }
   dup2(dev_null, STDIN_FILENO);
-  dup2(dev_null, STDOUT_FILENO);
-  dup2(dev_null, STDERR_FILENO);
+
+  /* Redirect stdout + stderr: to log file if given, else /dev/null */
+  if (log_file != NULL) {
+    int log_fd = open(log_file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (log_fd < 0) {
+      /* Log file failed — fall back to /dev/null so we don't block */
+      dup2(dev_null, STDOUT_FILENO);
+      dup2(dev_null, STDERR_FILENO);
+    } else {
+      dup2(log_fd, STDOUT_FILENO);
+      dup2(log_fd, STDERR_FILENO);
+      close(log_fd);
+    }
+  } else {
+    dup2(dev_null, STDOUT_FILENO);
+    dup2(dev_null, STDERR_FILENO);
+  }
+  close(dev_null);
   if (dev_null > STDERR_FILENO) {
     close(dev_null);
   }
@@ -1415,7 +1436,7 @@ int main(int argc, char** argv) {
 
   /* Daemonize unless --foreground (once — not per restart cycle) */
   if (!args.foreground) {
-    if (_daemonize() != 0) {
+    if (_daemonize(args.log_file) != 0) {
       return 1;
     }
   }
