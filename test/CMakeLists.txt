@@ -30,10 +30,18 @@ if(BUILD_TESTING)
   endif()
 
   if(TEST_SOURCES)
+    # The command table in cli_util.c references every cmd_* handler, so the
+    # harness must link the real implementations. Compiling the actual
+    # command sources (instead of stubs) also exercises their translation
+    # units on every test build and fixes the previous missing-load.c link
+    # failure. Symbols beyond the wire codecs (cJSON, mime type sniffing,
+    # allocator) resolve through the whole-archive offs link below.
+    file(GLOB OFFS_CLI_COMMAND_SRC CONFIGURE_DEPENDS
+         "${CMAKE_CURRENT_SOURCE_DIR}/../src/offs/commands/*.c")
     add_executable(testoffs test_main.cpp ${TEST_SOURCES}
       ${CMAKE_CURRENT_SOURCE_DIR}/../src/offs/client.c
       ${CMAKE_CURRENT_SOURCE_DIR}/../src/offs/cli_util.c
-      ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_stubs.c
+      ${OFFS_CLI_COMMAND_SRC}
     )
     add_dependencies(testoffs offs offsd)
     # GNU ld needs --whole-archive to pull every object in the static offs lib

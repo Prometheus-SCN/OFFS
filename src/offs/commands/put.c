@@ -25,7 +25,8 @@ const char* mime_type_from_extension(const char* filename);
 static void _print_put_help(void) {
   printf(
     "offs put — import a file into the OFFS network\n\n"
-    "Usage: offs put <file> [--temporary] [--recycler <url>] [--tuple-size N]\n\n"
+    "Usage: offs put <file> [--temporary] [--recycler <url>] [--tuple-size N]\n"
+    "                   [--recycle-ephemeral commit|propagate]\n\n"
     "Streams the file to the daemon in 63 MiB chunks. The content type is\n"
     "detected from the file extension (e.g. .mp4 -> video/mp4); unknown\n"
     "extensions fall back to application/octet-stream.\n\n"
@@ -40,11 +41,19 @@ static void _print_put_help(void) {
     "                        Must be <= the daemon's max_tuple_size (default 5).\n"
     "                        Higher N = more redundancy + more storage; the\n"
     "                        pre-flight rejects the PUT if N > max_tuple_size.\n"
+    "  --recycle-ephemeral <mode>\n"
+    "                        How blocks fetched from --recycler are folded\n"
+    "                        in when they carry ephemeral claims: 'commit'\n"
+    "                        marks them permanent, 'propagate' keeps them\n"
+    "                        ephemeral and transfers the claim to this\n"
+    "                        file. Requires --recycler.\n"
     "  --help                Show this help.\n\n"
     "Examples:\n"
     "  offs put movie.mp4\n"
     "  offs put movie.mp4 --recycler http://192.168.1.50:23402\n"
-    "  offs put data.bin --tuple-size 5 --temporary\n\n"
+    "  offs put data.bin --tuple-size 5 --temporary\n"
+    "  offs put data.bin --recycler http://192.168.1.50:23402"
+    " --recycle-ephemeral commit\n\n"
     "On success, prints the ORI (an OFFS URL you can GET or share).");
 }
 
@@ -71,6 +80,8 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
   char* recycler_url = NULL;
   uint8_t has_tuple_size = 0;
   size_t tuple_size = 3;
+  /* recycle_ephemeral_e: 0 = none, 1 = commit, 2 = propagate */
+  uint8_t recycle_ephemeral = 0;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--temporary") == 0) {
@@ -81,6 +92,20 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
         return 1;
       }
       recycler_url = argv[++i];
+    } else if (strcmp(argv[i], "--recycle-ephemeral") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "%s\n", L10N_PUT_RECYCLE_USAGE);
+        return 1;
+      }
+      const char* recycle_mode = argv[++i];
+      if (strcmp(recycle_mode, "commit") == 0) {
+        recycle_ephemeral = 1;
+      } else if (strcmp(recycle_mode, "propagate") == 0) {
+        recycle_ephemeral = 2;
+      } else {
+        fprintf(stderr, "%s\n", L10N_PUT_RECYCLE_USAGE);
+        return 1;
+      }
     } else if (strcmp(argv[i], "--tuple-size") == 0) {
       if (i + 1 >= argc) {
         fprintf(stderr, "%s\n", L10N_PUT_TUPLE_SIZE_USAGE);
@@ -101,6 +126,16 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
       fprintf(stderr, "Error: unknown flag '%s'\n", argv[i]);
       return 1;
     }
+  }
+
+  /* recycle-ephemeral only governs how recycler-sourced blocks join the
+   * upload; without a recycler there is no recycler recipe for it to
+   * configure, and the daemon rejects the combination (mirroring the HTTP
+   * transport's "recycle-ephemeral requires a recycler" 400). Reject it
+   * here instead of sending a flag the unix put path silently ignores. */
+  if (recycle_ephemeral != 0 && recycler_url == NULL) {
+    fprintf(stderr, "%s\n", L10N_PUT_RECYCLE_NEEDS_RECYCLER);
+    return 1;
   }
 
   /* Open file and determine size */
@@ -161,6 +196,7 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
   put_req.temporary = temporary;
   put_req.has_tuple_size = has_tuple_size;
   put_req.tuple_size = tuple_size;
+  put_req.recycle_ephemeral = recycle_ephemeral;
 
   char* recycler_arr[1] = {recycler_url};
   if (recycler_url != NULL) {

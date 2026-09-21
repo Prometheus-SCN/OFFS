@@ -10,6 +10,38 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Block hashes are 32 raw bytes on the wire, but the CLI's own listings
+ * (offs ephemeral list) print them as 64 hex characters. Translate a hex
+ * hash into its 32 raw bytes; anything else passes through untouched so
+ * callers embedding literal bytes keep working. Returns 1 when *out was
+ * rewritten (caller frees), 0 when the input was not a hex hash. */
+static int _hex_decode_hash(const char* text, uint8_t** out, size_t* out_len) {
+  size_t text_len = strlen(text);
+  if (text_len != 64) {
+    return 0;
+  }
+  for (size_t i = 0; i < text_len; i++) {
+    char c = text[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+          (c >= 'A' && c <= 'F'))) {
+      return 0;
+    }
+  }
+  uint8_t* decoded = malloc(32);
+  if (decoded == NULL) {
+    return 0;
+  }
+  for (size_t byte_index = 0; byte_index < 32; byte_index++) {
+    char high = text[byte_index * 2];
+    char low = text[byte_index * 2 + 1];
+    char pair[3] = {high, low, '\0'};
+    decoded[byte_index] = (uint8_t)strtoul(pair, NULL, 16);
+  }
+  *out = decoded;
+  *out_len = 32;
+  return 1;
+}
+
 int cmd_block(int argc, char** argv, cli_client_t* client) {
   if (argc < 1) {
     printf("Usage: offs block <put|get|delete> ...\n");
@@ -94,12 +126,33 @@ int cmd_block(int argc, char** argv, cli_client_t* client) {
       return 1;
     }
 
+    const char* block_hash = argv[1];
+    uint8_t force = 0;
+    for (int i = 2; i < argc; i++) {
+      if (strcmp(argv[i], "--force") == 0) {
+        force = 1;
+      } else {
+        /* Reject anything unrecognized so typos (e.g. "--forc") don't get
+         * silently dropped and the delete proceed without the force bit. */
+        fprintf(stderr, "%s\n", L10N_BLOCK_DELETE_USAGE);
+        return 1;
+      }
+    }
+
     client_api_block_delete_request_t blk_del;
     memset(&blk_del, 0, sizeof(blk_del));
-    blk_del.hash_data = (uint8_t*)argv[1];
-    blk_del.hash_len = strlen(argv[1]);
+    blk_del.hash_data = (uint8_t*)block_hash;
+    blk_del.hash_len = strlen(block_hash);
+    uint8_t* decoded_hash = NULL;
+    size_t decoded_hash_len = 0;
+    if (_hex_decode_hash(block_hash, &decoded_hash, &decoded_hash_len)) {
+      blk_del.hash_data = decoded_hash;
+      blk_del.hash_len = decoded_hash_len;
+    }
+    blk_del.force = force;
 
     cbor_item_t* request = client_api_block_delete_request_encode(&blk_del);
+    free(decoded_hash);
     cbor_item_t* response = cli_client_send(client, request);
     cbor_decref(&request);
 
@@ -112,15 +165,39 @@ int cmd_block(int argc, char** argv, cli_client_t* client) {
       client_api_error_t err_msg;
       memset(&err_msg, 0, sizeof(err_msg));
       if (client_api_error_decode(response, &err_msg) == 0) {
-        fprintf(stderr, "%s: %s\n", L10N_ERROR, err_msg.message);
+        if (err_msg.status_code == CLIENT_API_STATUS_CONFLICT) {
+          /* The daemon names the reason (pinned / ephemeral claims) on the
+           * error frame; tell the user about --force since that is the fix. */
+          fprintf(stderr, L10N_BLOCK_DELETE_CONFLICT "\n", err_msg.message);
+        } else {
+          fprintf(stderr, "%s: %s\n", L10N_ERROR, err_msg.message);
+        }
         client_api_error_destroy(&err_msg);
       }
       cbor_decref(&response);
       return 1;
     }
+    int result = 1;
+    if (type == CLIENT_API_BLOCK_DELETE_RESPONSE) {
+      client_api_block_delete_response_t blk_resp;
+      memset(&blk_resp, 0, sizeof(blk_resp));
+      if (client_api_block_delete_response_decode(response, &blk_resp) == 0) {
+        if (blk_resp.status == CLIENT_API_STATUS_OK) {
+          printf("%s\n", L10N_OK);
+          result = 0;
+        } else if (blk_resp.status == CLIENT_API_STATUS_NOT_FOUND) {
+          fprintf(stderr, "%s\n", L10N_BLOCK_DELETE_NOT_FOUND);
+        } else {
+          fprintf(stderr, L10N_BLOCK_DELETE_STATUS "\n", blk_resp.status);
+        }
+      } else {
+        fprintf(stderr, "%s\n", L10N_BLOCK_DELETE_DECODE);
+      }
+    } else {
+      fprintf(stderr, L10N_BLOCK_DELETE_UNEXPECTED "\n", type);
+    }
     cbor_decref(&response);
-    printf("%s\n", L10N_OK);
-    return 0;
+    return result;
   }
 
   printf("Usage: offs block <put|get|delete> ...\n");

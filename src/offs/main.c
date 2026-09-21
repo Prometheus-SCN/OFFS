@@ -78,6 +78,12 @@ int main(int argc, char** argv) {
   } else if (strcmp(command_name, "load") == 0 && argc > arg_offset + 1 &&
              strcmp(argv[arg_offset + 1], "--help") == 0) {
     needs_client = 0;
+  } else if ((strcmp(command_name, "ephemeral") == 0 ||
+              strcmp(command_name, "pin") == 0 ||
+              strcmp(command_name, "unpin") == 0) &&
+             argc > arg_offset + 1 &&
+             strcmp(argv[arg_offset + 1], "--help") == 0) {
+    needs_client = 0;
   }
 
   cli_client_t* client = NULL;

@@ -46,7 +46,11 @@ TEST(L10NTest, CommandDescriptionsNonEmpty) {
   EXPECT_STRNE(L10N_RESTART_DESC, "");
   EXPECT_STRNE(L10N_PUT_DESC, "");
   EXPECT_STRNE(L10N_GET_DESC, "");
+  EXPECT_STRNE(L10N_LOAD_DESC, "");
   EXPECT_STRNE(L10N_BLOCK_DESC, "");
+  EXPECT_STRNE(L10N_EPHEMERAL_DESC, "");
+  EXPECT_STRNE(L10N_PIN_DESC, "");
+  EXPECT_STRNE(L10N_UNPIN_DESC, "");
   EXPECT_STRNE(L10N_PEER_DESC, "");
   EXPECT_STRNE(L10N_CONFIG_DESC, "");
   EXPECT_STRNE(L10N_FRIEND_DESC, "");
@@ -70,6 +74,10 @@ TEST(L10NTest, UsageStringsNonEmpty) {
   EXPECT_STRNE(L10N_BLOCK_PUT_USAGE, "");
   EXPECT_STRNE(L10N_BLOCK_GET_USAGE, "");
   EXPECT_STRNE(L10N_BLOCK_DELETE_USAGE, "");
+  EXPECT_STRNE(L10N_LOAD_USAGE, "");
+  EXPECT_STRNE(L10N_EPHEMERAL_USAGE, "");
+  EXPECT_STRNE(L10N_PIN_USAGE, "");
+  EXPECT_STRNE(L10N_UNPIN_USAGE, "");
   EXPECT_STRNE(L10N_PEER_CONNECT_USAGE, "");
   EXPECT_STRNE(L10N_FRIEND_ADD_USAGE, "");
   EXPECT_STRNE(L10N_FRIEND_REMOVE_USAGE, "");
@@ -121,7 +129,8 @@ TEST(CommandTableTest, ExpectedCommandsExist) {
   ASSERT_NE(commands, nullptr);
 
   const char* expected[] = {
-    "start", "stop", "restart", "put", "get", "block", "peer",
+    "start", "stop", "restart", "put", "get", "load", "block",
+    "ephemeral", "pin", "unpin", "peer",
     "config", "friend", "health", "status", "version", "help", NULL
   };
 
@@ -142,7 +151,7 @@ TEST(CommandTableTest, TableCount) {
   ASSERT_NE(commands, nullptr);
   int count = 0;
   while (commands[count].name != NULL) count++;
-  EXPECT_EQ(count, 13);
+  EXPECT_EQ(count, 17);
 }
 
 TEST(LangDetectionTest, ReturnsEnWhenNoEnvVars) {

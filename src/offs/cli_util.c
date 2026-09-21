@@ -13,6 +13,9 @@ int cmd_put(int argc, char** argv, cli_client_t* client);
 int cmd_get(int argc, char** argv, cli_client_t* client);
 int cmd_load(int argc, char** argv, cli_client_t* client);
 int cmd_block(int argc, char** argv, cli_client_t* client);
+int cmd_ephemeral(int argc, char** argv, cli_client_t* client);
+int cmd_pin(int argc, char** argv, cli_client_t* client);
+int cmd_unpin(int argc, char** argv, cli_client_t* client);
 int cmd_peer(int argc, char** argv, cli_client_t* client);
 int cmd_config(int argc, char** argv, cli_client_t* client);
 int cmd_friend(int argc, char** argv, cli_client_t* client);
@@ -31,6 +34,9 @@ static cli_command_t g_commands[] = {
   {"get",     L10N_GET_DESC,     cmd_get},
   {"load",    L10N_LOAD_DESC,    cmd_load},
   {"block",   L10N_BLOCK_DESC,   cmd_block},
+  {"ephemeral", L10N_EPHEMERAL_DESC, cmd_ephemeral},
+  {"pin",     L10N_PIN_DESC,     cmd_pin},
+  {"unpin",   L10N_UNPIN_DESC,   cmd_unpin},
   {"peer",    L10N_PEER_DESC,    cmd_peer},
   {"config",  L10N_CONFIG_DESC,  cmd_config},
   {"friend",  L10N_FRIEND_DESC,  cmd_friend},
