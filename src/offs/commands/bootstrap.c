@@ -19,7 +19,8 @@
  * no request destroy is needed.
  * Returns 0 on success, 1 on failure (message already printed). */
 static int bootstrap_send_and_report(cli_client_t* client,
-                                     cbor_item_t* request) {
+                                     cbor_item_t* request,
+                                     int is_remove) {
   if (request == NULL) {
     fprintf(stderr, "%s\n", L10N_ERROR);
     return 1;
@@ -54,7 +55,10 @@ static int bootstrap_send_and_report(cli_client_t* client,
           exit_code = 0;
           break;
         case CLIENT_API_STATUS_CONFLICT:
-          fprintf(stderr, "%s\n", L10N_BOOTSTRAP_CONFLICT);
+          /* Remove conflicts mean the entry is config-seeded and immutable;
+             add conflicts mean the endpoint is already present. */
+          fprintf(stderr, "%s\n", is_remove ? L10N_BOOTSTRAP_REMOVE_CONFLICT
+                                            : L10N_BOOTSTRAP_CONFLICT);
           break;
         case CLIENT_API_STATUS_NOT_FOUND:
           fprintf(stderr, "%s\n", L10N_BOOTSTRAP_NOT_FOUND);
@@ -125,7 +129,7 @@ int cmd_bootstrap(int argc, char** argv, cli_client_t* client) {
     bootstrap_req.endpoint = argv[1];
 
     return bootstrap_send_and_report(
-        client, client_api_bootstrap_add_encode(&bootstrap_req));
+        client, client_api_bootstrap_add_encode(&bootstrap_req), 0);
   }
 
   if (strcmp(subcommand, "remove") == 0) {
@@ -139,7 +143,7 @@ int cmd_bootstrap(int argc, char** argv, cli_client_t* client) {
     bootstrap_req.endpoint = argv[1];
 
     return bootstrap_send_and_report(
-        client, client_api_bootstrap_remove_encode(&bootstrap_req));
+        client, client_api_bootstrap_remove_encode(&bootstrap_req), 1);
   }
 
   if (strcmp(subcommand, "list") == 0) {
@@ -173,7 +177,8 @@ int cmd_bootstrap(int argc, char** argv, cli_client_t* client) {
       } else {
         printf("%s\n", L10N_BOOTSTRAP_LIST_PROMPT);
         size_t entry_count =
-            bootstrap_list.entries != NULL
+            (bootstrap_list.entries != NULL &&
+             cbor_isa_array(bootstrap_list.entries))
                 ? cbor_array_size(bootstrap_list.entries)
                 : 0;
         for (size_t entry_index = 0; entry_index < entry_count;

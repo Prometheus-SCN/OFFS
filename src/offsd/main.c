@@ -1065,6 +1065,10 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
       scheduler_pool_destroy(server->pool);
       return -1;
     }
+    /* Wire friend and bootstrap ops onto the WS transport so they mirror
+       the HTTP peer and bootstrap routes (the Unix transport is wired
+       via unix_transport_set_config_ctx below). */
+    ws_transport_set_peer_node(server->ws_transport, &server->node);
   }
 
   /* WebTransport transport */
@@ -1093,6 +1097,8 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
       scheduler_pool_destroy(server->pool);
       return -1;
     }
+    /* Friend and bootstrap ops, mirroring the WS transport wiring. */
+    wt_transport_set_peer_node(server->wt_transport, &server->node);
   }
 
   /* HTTP/3 WebTransport transport */

@@ -103,6 +103,7 @@
 #define L10N_BOOTSTRAP_REMOVE_USAGE  "Usage: offs bootstrap remove <host:port>"
 #define L10N_BOOTSTRAP_LIST_PROMPT   "Bootstrap peers:"
 #define L10N_BOOTSTRAP_CONFLICT      "Already a bootstrap peer (or config-seeded)"
+#define L10N_BOOTSTRAP_REMOVE_CONFLICT "Bootstrap peer is config-seeded and cannot be removed"
 #define L10N_BOOTSTRAP_NOT_FOUND     "Bootstrap peer not found"
 #define L10N_BOOTSTRAP_BAD_ENDPOINT  "Invalid endpoint"
 
