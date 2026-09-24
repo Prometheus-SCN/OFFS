@@ -19,6 +19,7 @@ int cmd_unpin(int argc, char** argv, cli_client_t* client);
 int cmd_peer(int argc, char** argv, cli_client_t* client);
 int cmd_config(int argc, char** argv, cli_client_t* client);
 int cmd_friend(int argc, char** argv, cli_client_t* client);
+int cmd_bootstrap(int argc, char** argv, cli_client_t* client);
 int cmd_health(int argc, char** argv, cli_client_t* client);
 int cmd_status(int argc, char** argv, cli_client_t* client);
 int cmd_version(int argc, char** argv, cli_client_t* client);
@@ -43,6 +44,7 @@ static cli_command_t g_commands[] = {
   {"health",  L10N_HEALTH_DESC,  cmd_health},
   {"status",  L10N_STATUS_DESC,  cmd_status},
   {"version", L10N_VERSION_DESC, cmd_version},
+  {"bootstrap", L10N_BOOTSTRAP_DESC, cmd_bootstrap},
   {"help",    L10N_HELP_DESC,    NULL},
   {NULL, NULL, NULL}
 };

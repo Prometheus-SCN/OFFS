@@ -98,5 +98,12 @@
 #define L10N_FRIEND_ADD_USAGE       "Usage: offs friend add <data> | --qr <ppm-file>"
 #define L10N_FRIEND_REMOVE_USAGE    "Usage: offs friend remove <node-id>"
 #define L10N_FRIEND_LIST_PROMPT     "Friends:"
+#define L10N_BOOTSTRAP_DESC          "Bootstrap peer management"
+#define L10N_BOOTSTRAP_ADD_USAGE     "Usage: offs bootstrap add <host:port | [ipv6]:port>"
+#define L10N_BOOTSTRAP_REMOVE_USAGE  "Usage: offs bootstrap remove <host:port>"
+#define L10N_BOOTSTRAP_LIST_PROMPT   "Bootstrap peers:"
+#define L10N_BOOTSTRAP_CONFLICT      "Already a bootstrap peer (or config-seeded)"
+#define L10N_BOOTSTRAP_NOT_FOUND     "Bootstrap peer not found"
+#define L10N_BOOTSTRAP_BAD_ENDPOINT  "Invalid endpoint"
 
 #endif // OFFS_L10N_EN_H
