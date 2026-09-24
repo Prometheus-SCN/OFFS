@@ -768,11 +768,14 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
     server->config.max_capacity_bytes = args->max_capacity_bytes;
   }
 
-  /* CLI --bootstrap / config-file bootstrap-peers fill config.bootstrap_peers
-   * when the (pending) config did not set it already. The string is strdup'd
-   * because server->config is embedded in the server and freed via
-   * config_free_members() at shutdown, so it must own its storage. */
-  if (args->bootstrap_peers != NULL && server->config.bootstrap_peers == NULL) {
+  /* CLI --bootstrap overrides a staged pending config's bootstrap_peers,
+     consistent with --max-capacity-bytes / --api-key. The string is strdup'd
+     because server->config is embedded in the server and freed via
+     config_free_members() at shutdown, so it must own its storage; the
+     config-seeded immutable-at-runtime bootstrap list is seeded from this
+     field later in _startup. */
+  if (args->bootstrap_peers != NULL) {
+    free(server->config.bootstrap_peers);
     server->config.bootstrap_peers = strdup(args->bootstrap_peers);
     if (server->config.bootstrap_peers == NULL) {
       fprintf(stderr, "Out of memory copying bootstrap_peers\n");
