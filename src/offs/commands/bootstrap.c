@@ -90,6 +90,7 @@ static void bootstrap_print_entry(cbor_item_t* entry) {
   cbor_item_t* source_item = cbor_array_get(entry, 2);
 
   if (host_item != NULL && cbor_isa_string(host_item) &&
+      cbor_string_length(host_item) > 0 &&
       port_item != NULL && cbor_isa_uint(port_item) &&
       source_item != NULL && cbor_isa_uint(source_item)) {
     const char* source_label =

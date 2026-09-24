@@ -81,6 +81,8 @@ TEST(L10NTest, UsageStringsNonEmpty) {
   EXPECT_STRNE(L10N_PEER_CONNECT_USAGE, "");
   EXPECT_STRNE(L10N_FRIEND_ADD_USAGE, "");
   EXPECT_STRNE(L10N_FRIEND_REMOVE_USAGE, "");
+  EXPECT_STRNE(L10N_BOOTSTRAP_ADD_USAGE, "");
+  EXPECT_STRNE(L10N_BOOTSTRAP_REMOVE_USAGE, "");
 }
 
 TEST(L10NTest, PromptStringsNonEmpty) {
@@ -88,6 +90,13 @@ TEST(L10NTest, PromptStringsNonEmpty) {
   EXPECT_STRNE(L10N_PEER_LIST_PROMPT, "");
   EXPECT_STRNE(L10N_CONFIG_SHOW_PROMPT, "");
   EXPECT_STRNE(L10N_FRIEND_LIST_PROMPT, "");
+  EXPECT_STRNE(L10N_BOOTSTRAP_LIST_PROMPT, "");
+}
+
+TEST(L10NTest, BootstrapStatusStringsNonEmpty) {
+  EXPECT_STRNE(L10N_BOOTSTRAP_CONFLICT, "");
+  EXPECT_STRNE(L10N_BOOTSTRAP_NOT_FOUND, "");
+  EXPECT_STRNE(L10N_BOOTSTRAP_BAD_ENDPOINT, "");
 }
 
 TEST(L10NTest, DaemonMessagesNonEmpty) {
@@ -130,7 +139,7 @@ TEST(CommandTableTest, ExpectedCommandsExist) {
 
   const char* expected[] = {
     "start", "stop", "restart", "put", "get", "load", "block",
-    "ephemeral", "pin", "unpin", "peer",
+    "ephemeral", "pin", "unpin", "peer", "bootstrap",
     "config", "friend", "health", "status", "version", "help", NULL
   };
 
@@ -151,7 +160,7 @@ TEST(CommandTableTest, TableCount) {
   ASSERT_NE(commands, nullptr);
   int count = 0;
   while (commands[count].name != NULL) count++;
-  EXPECT_EQ(count, 17);
+  EXPECT_EQ(count, 18);
 }
 
 TEST(LangDetectionTest, ReturnsEnWhenNoEnvVars) {
