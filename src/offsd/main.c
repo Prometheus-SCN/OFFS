@@ -27,6 +27,7 @@
 #include "ClientAPI/HTTP/config_routes.h"
 #include "Node/node.h"
 #include "Network/authority.h"
+#include "Network/peer_book.h"
 #include "Network/network.h"
 #include "Network/peer_verify.h"
 #include "OFFStreams/tuple_cache.h"
@@ -1314,6 +1315,14 @@ static void _start_listening(offsd_server_t* server,
   }
 
   authority_load_peers(server->authority, server->network);
+
+  /* Startup-phase direct list access is done: open the peer-book actor for
+     business (arms the friend reconnect / partition-heal tick and admits the
+     mutation/snapshot round-trips used by the HTTP/wire peer routes). */
+  if (server->network->peer_book != NULL) {
+    peer_book_start(server->network->peer_book);
+  }
+
   network_start_connections(server->network);
 
   if (server->http_server != NULL) {
@@ -1347,6 +1356,10 @@ static void _shutdown(offsd_server_t* server, const char* pid_file) {
 
   /* 3. Save peers and stop network connections */
   if (server->network != NULL) {
+    /* Quiesce the peer-book actor before the direct-read save so the
+       reconnect tick can no longer race the list reads (peer_book.h
+       invariant (b)). */
+    peer_book_stop(server->network->peer_book);
     authority_save_peers(server->authority, server->network);
     ATOMIC_STORE(&server->network->running, 0);
     network_shutdown_connections(server->network);
