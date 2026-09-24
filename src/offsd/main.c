@@ -180,6 +180,7 @@ typedef struct {
   const char* relay_url;
   size_t      max_capacity_bytes;
   const char* api_key;
+  char*       bootstrap_peers;  // CSV of "host:port" network entry points
   uint16_t    ws_port;
   uint16_t    wt_port;
   uint16_t    wt_h3_port;
@@ -218,6 +219,7 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "  --max-capacity-bytes <n>  Block cache capacity in bytes (default: 5368709120 = 5 GiB)\n");
   fprintf(stderr, "  --api-key <key>       API key for /peer/* routes. If omitted, a random key\n");
   fprintf(stderr, "                       is generated and printed to stdout on startup.\n");
+  fprintf(stderr, "  --bootstrap <csv>     Comma-separated bootstrap entry points (host:port or [ipv6]:port)\n");
   fprintf(stderr, "  --ws-port <port>      WebSocket port, 0 to disable (default: 0)\n");
   fprintf(stderr, "  --wt-port <port>      WebTransport (custom QUIC) port, 0 to disable (default: 0)\n");
   fprintf(stderr, "  --wt-h3-port <port>  HTTP/3 WebTransport port, 0 to disable (default: 0)\n");
@@ -310,6 +312,11 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
     cJSON* max_cap = cJSON_GetObjectItem(network, "max-capacity-bytes");
     if (cJSON_IsNumber(max_cap) && args->max_capacity_bytes == 0) {
       args->max_capacity_bytes = (size_t)max_cap->valuedouble;
+    }
+    cJSON* bootstrap = cJSON_GetObjectItem(network, "bootstrap-peers");
+    if (cJSON_IsString(bootstrap) && args->bootstrap_peers == NULL) {
+      args->bootstrap_peers = strdup(bootstrap->valuestring);
+      if (args->bootstrap_peers == NULL) { cJSON_Delete(root); return -1; }
     }
   }
 
@@ -495,6 +502,8 @@ static int _parse_args(int argc, char** argv, offsd_args_t* args) {
       args->max_capacity_bytes = (size_t)strtoull(argv[++i], NULL, 10);
     } else if (strcmp(argv[i], "--api-key") == 0 && i + 1 < argc) {
       if (_arg_string_set(&args->api_key, argv[++i]) != 0) return -1;
+    } else if (strcmp(argv[i], "--bootstrap") == 0 && i + 1 < argc) {
+      if (_arg_string_set(&args->bootstrap_peers, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--ws-port") == 0 && i + 1 < argc) {
       args->ws_port = (uint16_t)atoi(argv[++i]);
     } else if (strcmp(argv[i], "--wt-port") == 0 && i + 1 < argc) {
@@ -583,6 +592,7 @@ static void _free_args(offsd_args_t* args) {
   free((void*)args->node_key_path);
   free((void*)args->relay_url);
   free((void*)args->api_key);
+  free((void*)args->bootstrap_peers);
   free((void*)args->ws_cert_path);
   free((void*)args->ws_key_path);
   free((void*)args->wt_cert_path);
@@ -756,6 +766,21 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
    * block cache capacity is taken from the flag when present. */
   if (args->max_capacity_bytes > 0) {
     server->config.max_capacity_bytes = args->max_capacity_bytes;
+  }
+
+  /* CLI --bootstrap / config-file bootstrap-peers fill config.bootstrap_peers
+   * when the (pending) config did not set it already. The string is strdup'd
+   * because server->config is embedded in the server and freed via
+   * config_free_members() at shutdown, so it must own its storage. */
+  if (args->bootstrap_peers != NULL && server->config.bootstrap_peers == NULL) {
+    server->config.bootstrap_peers = strdup(args->bootstrap_peers);
+    if (server->config.bootstrap_peers == NULL) {
+      fprintf(stderr, "Out of memory copying bootstrap_peers\n");
+      timer_actor_destroy(server->timer);
+      scheduler_pool_stop(server->pool);
+      scheduler_pool_destroy(server->pool);
+      return -1;
+    }
   }
 
   /* API key for /peer/* routes. If --api-key was not provided (and no [auth]
@@ -937,6 +962,19 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
      is backed up alongside pending config and other node-local state. */
   if (args->data_dir != NULL) {
     server->authority->peer_store_path = path_join(args->data_dir, "peer_store.cbor");
+  }
+
+  /* Seed the config-seeded (immutable-at-runtime) bootstrap list from
+     --bootstrap / the config file's bootstrap-peers key. Failure (invalid
+     CSV token or OOM) is logged by the authority and left non-fatal here:
+     the node starts with an empty bootstrap list, which is recoverable via
+     the operator-managed /bootstrap routes. */
+  if (server->config.bootstrap_peers != NULL) {
+    if (authority_set_bootstrap_peers(server->authority,
+                                      server->config.bootstrap_peers) != 0) {
+      fprintf(stderr, "Failed to seed bootstrap peers from config: %s\n",
+              server->config.bootstrap_peers);
+    }
   }
 
   authority_init_local_id(server->authority);
