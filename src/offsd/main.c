@@ -217,7 +217,7 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "  --ca-cert <path>      CA certificate PEM path\n");
   fprintf(stderr, "  --node-cert <path>    Node certificate PEM path\n");
   fprintf(stderr, "  --node-key <path>     Node private key PEM path\n");
-  fprintf(stderr, "  --relay-url <url>     Relay server URL (host:port or offs://host:port)\n");
+  fprintf(stderr, "  --relay-url <url>     Relay server URL (host:port, [ipv6]:port, or offs://host:port)\n");
   fprintf(stderr, "  --max-capacity-bytes <n>  Block cache capacity in bytes (default: 5368709120 = 5 GiB)\n");
   fprintf(stderr, "  --api-key <key>       API key for /peer/* routes. If omitted, a random key\n");
   fprintf(stderr, "                       is generated and printed to stdout on startup.\n");
