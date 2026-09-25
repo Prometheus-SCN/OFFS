@@ -101,8 +101,25 @@ static void bootstrap_print_entry(cbor_item_t* entry) {
         cbor_get_uint8(source_item) == CLIENT_API_BOOTSTRAP_SOURCE_CONFIG
             ? "config"
             : "managed";
-    printf("  %s:%u (%s)\n", cbor_string_handle(host_item),
-           (unsigned int)cbor_get_uint16(port_item), source_label);
+    /* The payload host is a bare literal (no brackets), so a v6 host:port
+     * pair is displayed in bracketed form (RFC 3986) to stay unambiguous. */
+    char host_buf[256];
+    size_t host_length = cbor_string_length(host_item);
+    if (host_length >= sizeof(host_buf)) host_length = sizeof(host_buf) - 1;
+    memcpy(host_buf, cbor_string_handle(host_item), host_length);
+    host_buf[host_length] = '\0';
+    char display[280];
+    int written;
+    if (strchr(host_buf, ':') != NULL) {
+      written = snprintf(display, sizeof(display), "[%s]:%u", host_buf,
+                         (unsigned int)cbor_get_uint16(port_item));
+    } else {
+      written = snprintf(display, sizeof(display), "%s:%u", host_buf,
+                         (unsigned int)cbor_get_uint16(port_item));
+    }
+    if (written > 0 && (size_t)written < sizeof(display)) {
+      printf("  %s (%s)\n", display, source_label);
+    }
   }
 
   if (host_item != NULL) cbor_decref(&host_item);

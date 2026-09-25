@@ -27,6 +27,7 @@
 #include "ClientAPI/HTTP/config_routes.h"
 #include "Node/node.h"
 #include "Network/authority.h"
+#include "Network/endpoint.h"
 #include "Network/peer_book.h"
 #include "Network/network.h"
 #include "Network/peer_verify.h"
@@ -200,7 +201,7 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "Usage: %s [options]\n", program);
   fprintf(stderr, "Options:\n");
   fprintf(stderr, "  --config <path>      Config file path (JSON)\n");
-  fprintf(stderr, "  --host <addr>        Bind address (default: 0.0.0.0)\n");
+  fprintf(stderr, "  --host <addr>        Bind address (default: 0.0.0.0; use :: for dual-stack)\n");
   fprintf(stderr, "  --port <port>        HTTP port, 0 to disable (default: 23402)\n");
   fprintf(stderr, "  --quic-port <port>   QUIC/P2P listener port, 0 to disable (default: 23401)\n");
   fprintf(stderr, "  --unix <path>        Unix socket path\n");
@@ -1243,6 +1244,19 @@ static config_t* _load_pending_override(const char* data_dir) {
  * Start listening
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
+/* Format a bare host + port as an unambiguous host:port display string,
+ * bracketing IPv6 literals (RFC 3986). */
+static void _format_endpoint(const char* host, uint16_t port, char* out,
+                             size_t out_len) {
+  int written;
+  if (strchr(host, ':') != NULL) {
+    written = snprintf(out, out_len, "[%s]:%u", host, (unsigned)port);
+  } else {
+    written = snprintf(out, out_len, "%s:%u", host, (unsigned)port);
+  }
+  if (written < 0 || (size_t)written >= out_len) out[0] = '\0';
+}
+
 static void _start_listening(offsd_server_t* server,
                              const offsd_args_t* args) {
   if (server->http_server != NULL) {
@@ -1288,7 +1302,9 @@ static void _start_listening(offsd_server_t* server,
   }
 
   /* Connect to the relay server for NAT traversal and server-reflexive address
-     discovery. The relay_url is "host:port" (optionally "offs://host:port").
+     discovery. The relay_url is "host:port" (optionally "offs://host:port"),
+     with bracketed IPv6 literals "[ipv6]:port" also accepted. endpoint_parse
+     strips the brackets so the relay client sees a bare v6 literal.
      The relay provides server-reflexive address discovery and forwards opaque
      WIRE_RELAY_SEND envelopes between peers behind NAT. After relay-mediated
      rendezvous, peers attempt UDP hole punching to establish a direct QUIC
@@ -1296,21 +1312,22 @@ static void _start_listening(offsd_server_t* server,
   if (args->relay_url != NULL && server->network != NULL) {
     const char* url = args->relay_url;
     if (strncmp(url, "offs://", 7) == 0) url += 7;
-    const char* colon = strrchr(url, ':');
-    if (colon != NULL) {
-      char* host = strndup(url, (size_t)(colon - url));
-      if (host != NULL) {
-        uint16_t relay_port = (uint16_t)atoi(colon + 1);
-        if (relay_port > 0) {
-          if (network_connect_relay(server->network, host, relay_port) == 0) {
-            printf("Connected to relay %s:%u\n", host, relay_port);
-          } else {
-            fprintf(stderr, "Warning: failed to connect to relay %s:%u\n",
-                    host, relay_port);
-          }
-        }
-        free(host);
+    char relay_host[256];
+    uint16_t relay_port = 0;
+    if (endpoint_parse(url, relay_host, sizeof(relay_host), &relay_port) == 0) {
+      char relay_display[300];
+      _format_endpoint(relay_host, relay_port, relay_display,
+                       sizeof(relay_display));
+      if (network_connect_relay(server->network, relay_host, relay_port) == 0) {
+        printf("Connected to relay %s\n", relay_display);
+      } else {
+        fprintf(stderr, "Warning: failed to connect to relay %s\n",
+                relay_display);
       }
+    } else {
+      fprintf(stderr,
+              "Warning: invalid relay URL %s (expected host:port or [ipv6]:port)\n",
+              args->relay_url);
     }
   }
 
