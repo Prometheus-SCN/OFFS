@@ -5,6 +5,7 @@
 #include "../client.h"
 #include "../l10n/en.h"
 #include "ClientAPI/client_api_wire.h"
+#include "Network/endpoint.h"
 #include <cbor.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -109,15 +110,8 @@ static void bootstrap_print_entry(cbor_item_t* entry) {
     memcpy(host_buf, cbor_string_handle(host_item), host_length);
     host_buf[host_length] = '\0';
     char display[280];
-    int written;
-    if (strchr(host_buf, ':') != NULL) {
-      written = snprintf(display, sizeof(display), "[%s]:%u", host_buf,
-                         (unsigned int)cbor_get_uint16(port_item));
-    } else {
-      written = snprintf(display, sizeof(display), "%s:%u", host_buf,
-                         (unsigned int)cbor_get_uint16(port_item));
-    }
-    if (written > 0 && (size_t)written < sizeof(display)) {
+    if (endpoint_host_header(host_buf, cbor_get_uint16(port_item), display,
+                             sizeof(display)) == 0) {
       printf("  %s (%s)\n", display, source_label);
     }
   }

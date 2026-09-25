@@ -1244,19 +1244,6 @@ static config_t* _load_pending_override(const char* data_dir) {
  * Start listening
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
-/* Format a bare host + port as an unambiguous host:port display string,
- * bracketing IPv6 literals (RFC 3986). */
-static void _format_endpoint(const char* host, uint16_t port, char* out,
-                             size_t out_len) {
-  int written;
-  if (strchr(host, ':') != NULL) {
-    written = snprintf(out, out_len, "[%s]:%u", host, (unsigned)port);
-  } else {
-    written = snprintf(out, out_len, "%s:%u", host, (unsigned)port);
-  }
-  if (written < 0 || (size_t)written >= out_len) out[0] = '\0';
-}
-
 static void _start_listening(offsd_server_t* server,
                              const offsd_args_t* args) {
   if (server->http_server != NULL) {
@@ -1315,9 +1302,12 @@ static void _start_listening(offsd_server_t* server,
     char relay_host[256];
     uint16_t relay_port = 0;
     if (endpoint_parse(url, relay_host, sizeof(relay_host), &relay_port) == 0) {
+      /* endpoint_host_header brackets v6 literals (RFC 3986) for display. */
       char relay_display[300];
-      _format_endpoint(relay_host, relay_port, relay_display,
-                       sizeof(relay_display));
+      if (endpoint_host_header(relay_host, relay_port, relay_display,
+                               sizeof(relay_display)) != 0) {
+        relay_display[0] = '\0';
+      }
       if (network_connect_relay(server->network, relay_host, relay_port) == 0) {
         printf("Connected to relay %s\n", relay_display);
       } else {
