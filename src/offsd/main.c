@@ -238,15 +238,20 @@ static void _print_usage(const char* program) {
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
 static int _get_worker_count(void) {
+  /* Minimum 2: HTTP handlers run as actors on this pool and synchronously
+     round-trip other actors (e.g. POST /friends → the peer-book actor). A
+     single worker deadlocks those round-trips until their timeout — on a
+     1-vCPU host (Azure ACI) every peer-book write 500'd, so friends were
+     never persisted and nodes came back empty after a restart. */
 #ifdef _WIN32
   SYSTEM_INFO sysinfo;
   GetSystemInfo(&sysinfo);
-  return sysinfo.dwNumberOfProcessors > 0 ? (int)sysinfo.dwNumberOfProcessors : 1;
+  int nprocs = (int)sysinfo.dwNumberOfProcessors;
 #else
-  long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
-  if (nprocs < 1) return 1;
-  return (int)nprocs;
+  long nprocs_long = sysconf(_SC_NPROCESSORS_ONLN);
+  int nprocs = nprocs_long < 1 ? 1 : (int)nprocs_long;
 #endif
+  return nprocs < 2 ? 2 : nprocs;
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
