@@ -1260,6 +1260,18 @@ static void _start_listening(offsd_server_t* server,
     } else {
       fprintf(stderr, "Warning: failed to start QUIC listener on %s:%u\n", args->host, args->quic_port);
     }
+
+    /* Start the mDNS responder so same-LAN peers discover this node without
+       a configured bootstrap list (announces node_id + quic_port, answers
+       other peers' announces by connecting back). Optional subsystem: a
+       failure (no multicast route, port busy, Windows stub) must not abort
+       startup — the node still works with explicit bootstrap peers. */
+    if (network_start_mdns(server->network) != 0) {
+      fprintf(stderr,
+              "Warning: failed to start mDNS responder — LAN auto-discovery disabled\n");
+    } else {
+      printf("mDNS discovery started (announcing on %u)\n", args->quic_port);
+    }
   }
 
   if (server->ws_transport != NULL) {
@@ -1363,6 +1375,10 @@ static void _shutdown(offsd_server_t* server, const char* pid_file) {
 
   /* 3. Save peers and stop network connections */
   if (server->network != NULL) {
+    /* Stop the mDNS responder first: its announce thread reads network state
+       and can fire connect attempts, which must not race the shutdown of
+       the connections and the peer-book actor below. */
+    network_stop_mdns(server->network);
     /* Quiesce the peer-book actor before the direct-read save so the
        reconnect tick can no longer race the list reads (peer_book.h
        invariant (b)). */
