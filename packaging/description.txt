@@ -1,0 +1,12 @@
+OFFS is the daemon, command-line client, and utilities for the OFF System
+network. This package installs:
+
+  offsd          the OFFS node daemon (HTTP/QUIC/Unix transports)
+  offs           the command-line client
+  offs-updater   the standalone self-update helper
+  offs-metrics   the metrics aggregation server
+
+The daemon ships a default configuration at
+/etc/offs/offs-default.json and a systemd unit (offsd.service) that is
+not auto-enabled at install time. See the unit file for the invocation
+and the offsd --help output for the full option list.

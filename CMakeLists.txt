@@ -210,3 +210,60 @@ include(CTest)
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test/CMakeLists.txt)
   add_subdirectory(test)
 endif()
+# BLAKE3's vendored CMake references ${CMAKE_BINARY_DIR} for its generated
+# libblake3.pc, which resolves to this top-level build dir when built
+# in-tree — wrong for a nested add_subdirectory. Copy the generated file to
+# where the vendored install rule expects it so `cpack`/`install` succeed
+# without patching the upstream submodule.
+file(COPY ${CMAKE_BINARY_DIR}/deps/liboffs/deps/BLAKE3/c/libblake3.pc
+     DESTINATION ${CMAKE_BINARY_DIR})
+
+# ---------------------------------------------------------------------------
+# Installation / packaging (Linux deb). The deb ships only the daemon, CLI,
+# updater, and metrics server plus the default config and the systemd unit
+# (not auto-enabled) — everything in the "offs-bin" component. Vendored
+# dependency install rules (gtest, pcre2, blake3, ...) are uncomponentized
+# and therefore excluded from the package. Generate with `cpack -G DEB` in
+# the build directory.
+set(CPACK_COMPONENTS_ALL "offs-bin")
+set(CPACK_DEB_COMPONENT_INSTALL ON)
+
+install(TARGETS offsd offs-updater offs-metrics
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT offs-bin)
+if(OFFS_CLI_SRC)
+  install(TARGETS offs_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    COMPONENT offs-bin)
+endif()
+install(FILES docker/offs-default.json
+  DESTINATION /etc/offs COMPONENT offs-bin)
+install(FILES packaging/offsd.service
+  DESTINATION /lib/systemd/system COMPONENT offs-bin)
+# offsd links the in-tree msquic dynamically; the system has no libmsquic
+# package, so ship the built shared object and the linker resolves it from
+# the default search path. bin/Release contains a symlink chain (.so ->
+# .so.2 -> .so.2.6.0); install the real file plus the SONAME symlink.
+set(OFFS_MSQUIC_SO_DIR ${CMAKE_BINARY_DIR}/deps/liboffs/deps/msquic/bin/Release)
+install(FILES ${OFFS_MSQUIC_SO_DIR}/libmsquic.so.2.6.0
+  DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT offs-bin)
+install(CODE [=[
+execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
+  libmsquic.so.2.6.0 $ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/libmsquic.so.2)
+]=]
+  COMPONENT offs-bin)
+
+set(CPACK_PACKAGE_NAME "offsd")
+set(CPACK_PACKAGE_VENDOR "Prometheus-SCN")
+set(CPACK_PACKAGE_CONTACT "Victor Morrow <victor.j.morrow@gmail.com>")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OFF System daemon, CLI and utilities")
+set(CPACK_PACKAGE_DESCRIPTION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/description.txt")
+set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
+set(CPACK_DEBIAN_PACKAGE_SECTION "net")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+# dpkg-shlibdeps cannot resolve libmsquic.so.2 (built in-tree, shipped by
+# this package; no system libmsquic package exists) and aborts, so declare
+# the external runtime deps explicitly. libmsquic ships in-package.
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.34), libssl3 (>= 3.0), libatomic1 (>= 4.8), libnuma1 (>= 2.0.11)")
+set(CPACK_DEBIAN_OFFS-BIN_PACKAGE_NAME "offsd")
+set(CPACK_DEBIAN_OFFS-BIN_FILE_NAME "offsd-0.1.1-Linux.deb")
+include(CPack)

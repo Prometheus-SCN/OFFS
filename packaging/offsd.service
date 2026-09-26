@@ -1,0 +1,13 @@
+[Unit]
+Description=OFFS daemon (offsd)
+Documentation=https://github.com/Prometheus-SCN/OFFS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/offsd --config /etc/offs/offs-default.json --foreground
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
