@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include "Platform/platform_posix_compat.h"  /* isatty, STDERR_FILENO */
 
 int cmd_load(int argc, char** argv, cli_client_t* client) {
   if (argc < 1) {

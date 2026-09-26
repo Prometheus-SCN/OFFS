@@ -225,7 +225,9 @@ static int service_windows_uninstall(void) {
     return service_result_error;
   }
 
-  SC_HANDLE svc = service_windows_open_service(scm, SERVICE_DELETE |
+  /* OpenService's desired-access flag for removal is DELETE (winnt.h),
+   * not SERVICE_DELETE — there is no such SERVICE_* constant. */
+  SC_HANDLE svc = service_windows_open_service(scm, DELETE |
                                                     SERVICE_QUERY_STATUS);
   if (svc == NULL) {
     DWORD error = GetLastError();

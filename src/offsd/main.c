@@ -1530,8 +1530,6 @@ int main(int argc, char** argv) {
     signal(SIGTERM, _signal_handler);
     signal(SIGHUP, _signal_handler);
     signal(SIGPIPE, SIG_IGN);
-#else
-    signal(SIGPIPE, SIG_IGN);
 #endif
 
     /* Apply metrics server URL from CLI/config file */

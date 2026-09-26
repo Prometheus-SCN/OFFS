@@ -17,7 +17,7 @@ const char* mime_type_from_extension(const char* filename);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include "Platform/platform_posix_compat.h"  /* isatty, STDERR_FILENO */
 #include <errno.h>
 
 #define PUT_CHUNK_SIZE (63 * 1024 * 1024)  /* just under 64 MB OFFS_MAX_CBOR_MESSAGE_SIZE */
