@@ -79,6 +79,10 @@ COPY --from=builder /build/offs/build/offsd /usr/bin/offsd
 # Cert mount point and data directories
 RUN mkdir -p /etc/offs/certs /data/cache /data/data
 
+# Default config: network entry points (Azure-hosted relay + bootstrap).
+# Loaded by offsd automatically when --config is absent.
+COPY docker/offs-default.json /etc/offs/offs.json
+
 # Entrypoint that generates a self-signed node cert if none is mounted
 COPY docker/offsd-entrypoint.sh /usr/local/bin/offsd-entrypoint.sh
 RUN chmod +x /usr/local/bin/offsd-entrypoint.sh

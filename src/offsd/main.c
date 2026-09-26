@@ -200,7 +200,7 @@ typedef struct {
 static void _print_usage(const char* program) {
   fprintf(stderr, "Usage: %s [options]\n", program);
   fprintf(stderr, "Options:\n");
-  fprintf(stderr, "  --config <path>      Config file path (JSON)\n");
+  fprintf(stderr, "  --config <path>      Config file path (JSON). Default: $OFFS_CONFIG or /etc/offs/offs.json when present\n");
   fprintf(stderr, "  --host <addr>        Bind address (default: 0.0.0.0; use :: for dual-stack)\n");
   fprintf(stderr, "  --port <port>        HTTP port, 0 to disable (default: 23402)\n");
   fprintf(stderr, "  --quic-port <port>   QUIC/P2P listener port, 0 to disable (default: 23401)\n");
@@ -1469,12 +1469,7 @@ int main(int argc, char** argv) {
   memset(&args, 0, sizeof(args));
   if (_arg_string_set(&args.host, "0.0.0.0") != 0 ||
       _arg_string_set(&args.cache_dir, "./offs_cache") != 0 ||
-      _arg_string_set(&args.data_dir, ".") != 0 ||
-      /* Default network entry points: the Azure-hosted relay and bootstrap
-         node. Explicit --relay-url/--bootstrap (or the config file) override
-         these; an empty --relay-url "" / --bootstrap "" opts out. */
-      _arg_string_set(&args.relay_url, "20.163.130.127:14000") != 0 ||
-      _arg_string_set(&args.bootstrap_peers, "172.178.8.253:23401") != 0) {
+      _arg_string_set(&args.data_dir, ".") != 0) {
     fprintf(stderr, "Error: allocation failure during startup\n");
     _free_args(&args);
     return 1;
@@ -1483,6 +1478,24 @@ int main(int argc, char** argv) {
   args.quic_port = 23401;
   args.worker_count = 0;
   args.foreground = 0;
+
+  /* Default config file: when --config is absent, fall back to $OFFS_CONFIG
+     then /etc/offs/offs.json. This ships the network entry points (relay +
+     bootstrap) as a config-file default instead of baking them into the
+     binary. Explicit --config disables the fallback entirely; CLI flags
+     still override values from the file (config parsing only fills fields
+     the flags left NULL). */
+  if (args.config_path == NULL) {
+    const char* default_config = getenv("OFFS_CONFIG");
+    if (default_config == NULL || default_config[0] == '\0') {
+      default_config = "/etc/offs/offs.json";
+    }
+    struct stat default_config_st;
+    if (stat(default_config, &default_config_st) == 0 &&
+        S_ISREG(default_config_st.st_mode)) {
+      args.config_path = default_config;
+    }
+  }
 
   /* Parse CLI flags and config file */
   int parse_result = _parse_args(argc, argv, &args);
