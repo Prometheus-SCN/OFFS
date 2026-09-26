@@ -136,7 +136,7 @@ static int daemon_proc_start(struct DaemonProc* proc, const char* offsd_path,
       + " --foreground"
       + " --unix \"" + unix_path + "\""
       + " --cache-dir \"" + cache_dir + "\""
-      + " --data-dir \"" + data_dir + "\""
+      + " --config-dir \"" + data_dir + "\""
       + " --pid-file " + pid_file
       + " --port 0";
   std::vector<char> buf(cmdline.begin(), cmdline.end());
@@ -174,7 +174,7 @@ static int daemon_proc_start(struct DaemonProc* proc, const char* offsd_path,
     argv[i++] = (char*)unix_path;
     argv[i++] = (char*)"--cache-dir";
     argv[i++] = (char*)cache_dir;
-    argv[i++] = (char*)"--data-dir";
+    argv[i++] = (char*)"--config-dir";
     argv[i++] = (char*)data_dir;
     argv[i++] = (char*)"--pid-file";
     argv[i++] = (char*)pid_file;
