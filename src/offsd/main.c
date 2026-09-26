@@ -31,6 +31,7 @@
 #include "Network/peer_book.h"
 #include "Network/network.h"
 #include "Network/peer_verify.h"
+#include "Network/pem_key.h"
 #include "OFFStreams/tuple_cache.h"
 #include "BlockCache/block_cache.h"
 #include "OFFStreams/ofd_cache.h"
@@ -715,7 +716,7 @@ static void _init_health_context(offsd_server_t* server, block_cache_t* bc) {
   server->health_ctx.draining = &server->draining_val;
 }
 
-static int _startup(offsd_server_t* server, const offsd_args_t* args,
+static int _startup(offsd_server_t* server, offsd_args_t* args,
                     config_t* override_config) {
   memset(server, 0, sizeof(*server));
 
@@ -934,6 +935,49 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
       scheduler_pool_stop(server->pool);
       scheduler_pool_destroy(server->pool);
       return -1;
+    }
+  }
+  /* First-launch cert generation: when no node cert is configured (CLI or
+     [tls] section), default to <data-dir>/certs so the QUIC TLS identity —
+     and therefore the node_id — is durable across restarts without the
+     docker entrypoint's openssl step. When a path IS configured but the
+     cert is absent (fresh volume, wiped data dir), generate it at the
+     configured path. Existing certs are never overwritten, so restarts
+     keep the same identity. */
+  if (args->node_cert_path == NULL && args->node_key_path == NULL &&
+      args->data_dir != NULL) {
+    char* default_cert = path_join(args->data_dir, "certs/node.pem");
+    char* default_key = path_join(args->data_dir, "certs/node-key.pem");
+    if (default_cert != NULL && default_key != NULL) {
+      if (access(default_cert, F_OK) != 0 || access(default_key, F_OK) != 0) {
+        if (pem_generate_self_signed_cert(default_cert, default_key,
+                                          "offs-offsd") == 0) {
+          fprintf(stderr, "Generated self-signed node cert at %s\n",
+                  default_cert);
+        } else {
+          fprintf(stderr, "Failed to generate self-signed node cert at %s "
+                          "(QUIC will be unavailable)\n", default_cert);
+        }
+      }
+      /* Adopt the paths whether generated or pre-existing so restarts
+         reuse the same identity files. */
+      args->node_cert_path = default_cert;
+      args->node_key_path = default_key;
+    } else {
+      free(default_cert);
+      free(default_key);
+    }
+  } else if (args->node_cert_path != NULL && args->node_key_path != NULL &&
+             (access(args->node_cert_path, F_OK) != 0 ||
+              access(args->node_key_path, F_OK) != 0)) {
+    if (pem_generate_self_signed_cert(args->node_cert_path,
+                                      args->node_key_path,
+                                      "offs-offsd") == 0) {
+      fprintf(stderr, "Generated self-signed node cert at %s\n",
+              args->node_cert_path);
+    } else {
+      fprintf(stderr, "Failed to generate self-signed node cert at %s\n",
+              args->node_cert_path);
     }
   }
   if (args->node_cert_path != NULL) {
