@@ -86,6 +86,10 @@ RUN chmod +x /usr/local/bin/offsd-entrypoint.sh
 EXPOSE 23401/udp
 EXPOSE 23402/tcp
 
+# Default network entry points: the Azure-hosted relay and bootstrap node.
+# The entrypoint passes RELAY_URL through as --relay-url; the offsd binary
+# itself defaults --bootstrap to the same bootstrap node.
+ENV RELAY_URL=20.163.130.127:14000
 ENTRYPOINT ["/usr/local/bin/offsd-entrypoint.sh"]
 CMD ["--host", "0.0.0.0", "--quic-port", "23401", "--port", "23402", \
      "--cache-dir", "/data/cache", "--data-dir", "/data/data", \

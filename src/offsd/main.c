@@ -1469,7 +1469,12 @@ int main(int argc, char** argv) {
   memset(&args, 0, sizeof(args));
   if (_arg_string_set(&args.host, "0.0.0.0") != 0 ||
       _arg_string_set(&args.cache_dir, "./offs_cache") != 0 ||
-      _arg_string_set(&args.data_dir, ".") != 0) {
+      _arg_string_set(&args.data_dir, ".") != 0 ||
+      /* Default network entry points: the Azure-hosted relay and bootstrap
+         node. Explicit --relay-url/--bootstrap (or the config file) override
+         these; an empty --relay-url "" / --bootstrap "" opts out. */
+      _arg_string_set(&args.relay_url, "20.163.130.127:14000") != 0 ||
+      _arg_string_set(&args.bootstrap_peers, "172.178.8.253:23401") != 0) {
     fprintf(stderr, "Error: allocation failure during startup\n");
     _free_args(&args);
     return 1;
