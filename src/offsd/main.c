@@ -32,6 +32,8 @@
 #include "Network/network.h"
 #include "Network/peer_verify.h"
 #include "Network/pem_key.h"
+#include "Platform/platform_dirs.h"
+#include "Util/rm_rf.h"
 #include "OFFStreams/tuple_cache.h"
 #include "BlockCache/block_cache.h"
 #include "OFFStreams/ofd_cache.h"
@@ -169,7 +171,7 @@ typedef struct {
   uint16_t    quic_port;
   const char* unix_path;
   const char* cache_dir;
-  const char* data_dir;
+  const char* config_dir;
   const char* pid_file;
   int         worker_count;
   int         foreground;
@@ -207,7 +209,7 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "  --quic-port <port>   QUIC/P2P listener port, 0 to disable (default: 23401)\n");
   fprintf(stderr, "  --unix <path>        Unix socket path\n");
   fprintf(stderr, "  --cache-dir <dir>    Block cache directory\n");
-  fprintf(stderr, "  --data-dir <dir>     Persistent data directory\n");
+  fprintf(stderr, "  --config-dir <dir>   Node config/state directory (certs, peer store,\n                       pending config). Default: system path when run as root\n                       (/etc/offs; macOS /Library/Application Support/offs),\n                       ~/.config/offs otherwise\n");
   fprintf(stderr, "  --pid-file <path>    PID file path\n");
   fprintf(stderr, "  --workers <n>        Worker count, 0=auto (default: 0)\n");
   fprintf(stderr, "  --foreground         Run in foreground (do not daemonize)\n");
@@ -288,10 +290,10 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
   /* [daemon] section */
   cJSON* daemon = cJSON_GetObjectItem(root, "daemon");
   if (daemon != NULL) {
-    cJSON* data_dir = cJSON_GetObjectItem(daemon, "data-dir");
-    if (cJSON_IsString(data_dir) && args->data_dir == NULL) {
-      args->data_dir = strdup(data_dir->valuestring);
-      if (args->data_dir == NULL) { cJSON_Delete(root); return -1; }
+    cJSON* config_dir = cJSON_GetObjectItem(daemon, "config-dir");
+    if (cJSON_IsString(config_dir) && args->config_dir == NULL) {
+      args->config_dir = strdup(config_dir->valuestring);
+      if (args->config_dir == NULL) { cJSON_Delete(root); return -1; }
     }
     cJSON* pid_file = cJSON_GetObjectItem(daemon, "pid-file");
     if (cJSON_IsString(pid_file) && args->pid_file == NULL) {
@@ -481,8 +483,8 @@ static int _parse_args(int argc, char** argv, offsd_args_t* args) {
       if (_arg_string_set(&args->unix_path, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--cache-dir") == 0 && i + 1 < argc) {
       if (_arg_string_set(&args->cache_dir, argv[++i]) != 0) return -1;
-    } else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc) {
-      if (_arg_string_set(&args->data_dir, argv[++i]) != 0) return -1;
+    } else if (strcmp(argv[i], "--config-dir") == 0 && i + 1 < argc) {
+      if (_arg_string_set(&args->config_dir, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--pid-file") == 0 && i + 1 < argc) {
       if (_arg_string_set(&args->pid_file, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--workers") == 0 && i + 1 < argc) {
@@ -589,7 +591,7 @@ static void _remove_pid_file(const char* path) {
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
 static void _free_args(offsd_args_t* args) {
-  free((void*)args->data_dir);
+  free((void*)args->config_dir);
   free((void*)args->pid_file);
   free((void*)args->host);
   free((void*)args->unix_path);
@@ -721,9 +723,9 @@ static int _startup(offsd_server_t* server, offsd_args_t* args,
   memset(server, 0, sizeof(*server));
 
   /* Ensure cache and data directories exist before subsystems use them.
-   * config_pending_save writes to {data_dir}/pending_config.json; the block
+   * config_pending_save writes to {config_dir}/pending_config.json; the block
    * cache writes section files under {cache_dir}. Without this, a missing
-   * data_dir surfaces as a cryptic "failed to write pending config" on the
+   * config_dir surfaces as a cryptic "failed to write pending config" on the
    * first config set, and a missing cache_dir fails block_cache_create. */
   if (args->cache_dir != NULL && mkdir_p((char*)args->cache_dir) != 0) {
     fprintf(stderr, "Failed to create cache directory: %s\n", args->cache_dir);
@@ -733,8 +735,8 @@ static int _startup(offsd_server_t* server, offsd_args_t* args,
     }
     return -1;
   }
-  if (args->data_dir != NULL && mkdir_p((char*)args->data_dir) != 0) {
-    fprintf(stderr, "Failed to create data directory: %s\n", args->data_dir);
+  if (args->config_dir != NULL && mkdir_p((char*)args->config_dir) != 0) {
+    fprintf(stderr, "Failed to create data directory: %s\n", args->config_dir);
     if (override_config != NULL) {
       config_free_members(override_config);
       free(override_config);
@@ -938,16 +940,16 @@ static int _startup(offsd_server_t* server, offsd_args_t* args,
     }
   }
   /* First-launch cert generation: when no node cert is configured (CLI or
-     [tls] section), default to <data-dir>/certs so the QUIC TLS identity —
+     [tls] section), default to <config-dir>/certs so the QUIC TLS identity —
      and therefore the node_id — is durable across restarts without the
      docker entrypoint's openssl step. When a path IS configured but the
      cert is absent (fresh volume, wiped data dir), generate it at the
      configured path. Existing certs are never overwritten, so restarts
      keep the same identity. */
   if (args->node_cert_path == NULL && args->node_key_path == NULL &&
-      args->data_dir != NULL) {
-    char* default_cert = path_join(args->data_dir, "certs/node.pem");
-    char* default_key = path_join(args->data_dir, "certs/node-key.pem");
+      args->config_dir != NULL) {
+    char* default_cert = path_join(args->config_dir, "certs/node.pem");
+    char* default_key = path_join(args->config_dir, "certs/node-key.pem");
     if (default_cert != NULL && default_key != NULL) {
       if (access(default_cert, F_OK) != 0 || access(default_key, F_OK) != 0) {
         if (pem_generate_self_signed_cert(default_cert, default_key,
@@ -1014,8 +1016,8 @@ static int _startup(offsd_server_t* server, offsd_args_t* args,
   /* Persist peer state (node ID, friends, hebbian weights, ring peers) across
      restarts. The peer store path lives under the daemon's data directory so it
      is backed up alongside pending config and other node-local state. */
-  if (args->data_dir != NULL) {
-    server->authority->peer_store_path = path_join(args->data_dir, "peer_store.cbor");
+  if (args->config_dir != NULL) {
+    server->authority->peer_store_path = path_join(args->config_dir, "peer_store.cbor");
   }
 
   /* Seed the config-seeded (immutable-at-runtime) bootstrap list from
@@ -1089,7 +1091,7 @@ static int _startup(offsd_server_t* server, offsd_args_t* args,
     peer_routes_register(server->http_server, &server->node,
                          &server->config, "enabled");
     config_routes_register(server->http_server, &server->node,
-                           &server->config, args->data_dir,
+                           &server->config, args->config_dir,
                            _request_restart, NULL);
   }
 
@@ -1216,11 +1218,11 @@ static int _startup(offsd_server_t* server, offsd_args_t* args,
     }
     /* Wire config management onto the local socket so `offs config show/set/
        generate-auth/reload` reach the node + pending-config store. node is
-       borrowed (owned by server); data_dir is copied by the setter. The restart
+       borrowed (owned by server); config_dir is copied by the setter. The restart
        trigger hands `config reload` to the main loop instead of running
        offs_node_restart on this pool worker. */
     unix_transport_set_config_ctx(server->unix_transport, &server->node,
-                                  args->data_dir, _request_restart, NULL);
+                                  args->config_dir, _request_restart, NULL);
   }
 
   /* Update actor — auto-update checks.
@@ -1279,12 +1281,84 @@ static int _startup(offsd_server_t* server, offsd_args_t* args,
  * into the initial _startup avoids that.
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
-static config_t* _load_pending_override(const char* data_dir) {
-  if (data_dir == NULL) return NULL;
-  if (config_pending_exists(data_dir) != 1) return NULL;
-  config_t* cfg = config_pending_load(data_dir);
+/* `offsd uninstall [--config] [--cache] [--config-dir <dir>] [--cache-dir <dir>]`
+   Removes state directories. Without an explicit --config/--cache choice it
+   prints usage and does nothing — deletion is never implicit. Paths resolve
+   to the context defaults (the same the daemon uses) unless overridden. */
+static int _run_uninstall(int argc, char** argv) {
+  bool remove_config = false;
+  bool remove_cache = false;
+  const char* config_dir = NULL;
+  const char* cache_dir = NULL;
+  /* argv[0] is the subcommand name ("uninstall"). */
+  for (int index = 1; index < argc; index++) {
+    if (strcmp(argv[index], "--config") == 0) {
+      remove_config = true;
+    } else if (strcmp(argv[index], "--cache") == 0) {
+      remove_cache = true;
+    } else if (strcmp(argv[index], "--config-dir") == 0 && index + 1 < argc) {
+      config_dir = argv[++index];
+    } else if (strcmp(argv[index], "--cache-dir") == 0 && index + 1 < argc) {
+      cache_dir = argv[++index];
+    } else {
+      fprintf(stderr, "offsd uninstall: unknown option %s\n", argv[index]);
+      fprintf(stderr, "Usage: offsd uninstall [--config] [--cache] "
+                      "[--config-dir <dir>] [--cache-dir <dir>]\n");
+      return 1;
+    }
+  }
+  if (!remove_config && !remove_cache) {
+    fprintf(stderr, "offsd uninstall: choose what to remove\n");
+    fprintf(stderr, "  --config   node identity (certs, peer store, pending config)\n");
+    fprintf(stderr, "  --cache    block cache\n");
+    fprintf(stderr, "Usage: offsd uninstall [--config] [--cache] "
+                    "[--config-dir <dir>] [--cache-dir <dir>]\n");
+    return 1;
+  }
+
+  offs_default_dirs_t defaults;
+  if (offs_default_dirs_get(&defaults) != 0) {
+    fprintf(stderr, "offsd uninstall: cannot determine default state "
+                    "directories (no HOME?) — pass --config-dir/--cache-dir\n");
+    return 1;
+  }
+  if (config_dir == NULL) config_dir = defaults.config_dir;
+  if (cache_dir == NULL) cache_dir = defaults.cache_dir;
+
+  int failed = 0;
+  if (remove_cache) {
+    struct stat cache_st;
+    if (stat(cache_dir, &cache_st) != 0) {
+      printf("Cache dir already absent: %s\n", cache_dir);
+    } else if (rm_rf(cache_dir) != 0) {
+      fprintf(stderr, "offsd uninstall: failed to remove cache dir %s\n",
+              cache_dir);
+      failed = 1;
+    } else {
+      printf("Removed cache dir: %s\n", cache_dir);
+    }
+  }
+  if (remove_config) {
+    struct stat config_st;
+    if (stat(config_dir, &config_st) != 0) {
+      printf("Config dir already absent: %s\n", config_dir);
+    } else if (rm_rf(config_dir) != 0) {
+      fprintf(stderr, "offsd uninstall: failed to remove config dir %s\n",
+              config_dir);
+      failed = 1;
+    } else {
+      printf("Removed config dir: %s\n", config_dir);
+    }
+  }
+  return failed;
+}
+
+static config_t* _load_pending_override(const char* config_dir) {
+  if (config_dir == NULL) return NULL;
+  if (config_pending_exists(config_dir) != 1) return NULL;
+  config_t* cfg = config_pending_load(config_dir);
   if (cfg != NULL) {
-    config_pending_mark_applied(data_dir);
+    config_pending_mark_applied(config_dir);
   }
   return cfg;
 }
@@ -1511,9 +1585,10 @@ int main(int argc, char** argv) {
    * value and strdups the new one. */
   offsd_args_t args;
   memset(&args, 0, sizeof(args));
-  if (_arg_string_set(&args.host, "0.0.0.0") != 0 ||
-      _arg_string_set(&args.cache_dir, "./offs_cache") != 0 ||
-      _arg_string_set(&args.data_dir, ".") != 0) {
+  /* cache_dir/config_dir are intentionally left NULL here: the context
+     defaults (offs_default_dirs_get) fill them unless the operator set
+     explicit flags or a config file value. */
+  if (_arg_string_set(&args.host, "0.0.0.0") != 0) {
     fprintf(stderr, "Error: allocation failure during startup\n");
     _free_args(&args);
     return 1;
@@ -1542,9 +1617,51 @@ int main(int argc, char** argv) {
   }
 
   /* Parse CLI flags and config file */
+  /* `offsd uninstall` — removes the node's state directories. The operator
+     chooses what to drop: --config (identity: certs, peer store, pending
+     config) and/or --cache (block cache). Paths default to the same
+     context defaults the daemon uses, so removal always targets the
+     directories creation used; explicit --config-dir/--cache-dir override.
+     Package-owned service files (systemd unit, binaries) are the
+     installer's job and are never touched here. */
+  if (argc > 1 && strcmp(argv[1], "uninstall") == 0) {
+    return _run_uninstall(argc - 1, argv + 1);
+  }
+
   int parse_result = _parse_args(argc, argv, &args);
   if (parse_result != 0) {
     return parse_result > 0 ? 0 : 1;
+  }
+
+  /* Default state directories by context when not configured: root /
+     service contexts get the system paths, regular users their XDG
+     (macOS Library / Windows LOCALAPPDATA) paths. Explicit flags and the
+     config file always win. Both are always non-NULL from here on — a
+     missing cache dir previously made block_cache_create fail. */
+  if (args.cache_dir == NULL || args.config_dir == NULL) {
+    offs_default_dirs_t defaults;
+    if (offs_default_dirs_get(&defaults) != 0) {
+      fprintf(stderr, "Cannot determine default state directories "
+                      "(no HOME?) — pass --config-dir/--cache-dir\n");
+      _free_args(&args);
+      return 1;
+    }
+    if (args.config_dir == NULL) {
+      args.config_dir = strdup(defaults.config_dir);
+      if (args.config_dir == NULL) {
+        fprintf(stderr, "Out of memory copying config dir\n");
+        _free_args(&args);
+        return 1;
+      }
+    }
+    if (args.cache_dir == NULL) {
+      args.cache_dir = strdup(defaults.cache_dir);
+      if (args.cache_dir == NULL) {
+        fprintf(stderr, "Out of memory copying cache dir\n");
+        _free_args(&args);
+        return 1;
+      }
+    }
   }
 
   /* Apply log configuration */
@@ -1569,7 +1686,7 @@ int main(int argc, char** argv) {
     printf("  QUIC: %u\n", args.quic_port);
   }
   printf("  Cache: %s\n", args.cache_dir);
-  printf("  Data: %s\n", args.data_dir);
+  printf("  Config: %s\n", args.config_dir);
   printf("  Workers: %d\n", args.worker_count);
   if (args.ws_port != 0) {
     printf("  WebSocket: %u\n", args.ws_port);
@@ -1595,7 +1712,7 @@ int main(int argc, char** argv) {
      config (folded into the first _startup) instead of running offs_node_restart
      after _startup — the old _apply_pending_config destroyed the shared pool the
      transport had already borrowed. */
-  config_t* cfg = _load_pending_override(args.data_dir);
+  config_t* cfg = _load_pending_override(args.config_dir);
 
   offsd_server_t server;
   for (;;) {
@@ -1653,7 +1770,7 @@ int main(int argc, char** argv) {
       break;
     }
     ATOMIC_STORE(&g_restart_requested, 0);
-    cfg = _load_pending_override(args.data_dir);
+    cfg = _load_pending_override(args.config_dir);
   }
 
   _free_args(&args);

@@ -5,7 +5,11 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/bin/offsd --config /etc/offs/offs-default.json --foreground
+Type=simple
+ExecStartPre=/usr/bin/mkdir -p /var/lib/offs/blocks
+ExecStart=/usr/bin/offsd --config /etc/offs/offs-default.json --foreground \
+  --config-dir /etc/offs --cache-dir /var/lib/offs
+WorkingDirectory=/var/lib/offs
 Restart=on-failure
 RestartSec=5
 

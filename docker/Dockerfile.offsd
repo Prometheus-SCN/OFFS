@@ -7,7 +7,8 @@
 #           offs-offsd
 #
 # Without mounted certs, a self-signed node cert is generated on first start.
-# The cache and peer_store persist under /data (mount a volume for persistence).
+# The cache and node state (config dir) persist under /data (mount a volume
+# for persistence).
 
 # --- Builder stage: compile offsd and all dependencies ---
 FROM ubuntu:24.04 AS builder
@@ -96,5 +97,5 @@ EXPOSE 23402/tcp
 ENV RELAY_URL=20.163.130.127:14000
 ENTRYPOINT ["/usr/local/bin/offsd-entrypoint.sh"]
 CMD ["--host", "0.0.0.0", "--quic-port", "23401", "--port", "23402", \
-     "--cache-dir", "/data/cache", "--data-dir", "/data/data", \
+     "--cache-dir", "/data/cache", "--config-dir", "/data/data", \
      "--max-capacity-bytes", "107374182400"]

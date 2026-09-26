@@ -238,6 +238,10 @@ install(FILES docker/offs-default.json
   DESTINATION /etc/offs COMPONENT offs-bin)
 install(FILES packaging/offsd.service
   DESTINATION /lib/systemd/system COMPONENT offs-bin)
+# The daemon's runtime state (config: certs/peer store; cache: blocks) lives
+# here — owned by the package so dpkg knows about it, but NOT deleted on
+# remove (only postrm purge wipes it; see packaging/postrm).
+install(DIRECTORY DESTINATION /var/lib/offs COMPONENT offs-bin)
 # offsd links the in-tree msquic dynamically; the system has no libmsquic
 # package, so ship the built shared object and the linker resolves it from
 # the default search path. bin/Release contains a symlink chain (.so ->
@@ -265,5 +269,7 @@ set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.34), libssl3 (>= 3.0), libatomic1 (>= 4.8), libnuma1 (>= 2.0.11)")
 set(CPACK_DEBIAN_OFFS-BIN_PACKAGE_NAME "offsd")
+set(CPACK_DEBIAN_OFFS-BIN_PACKAGE_CONTROL_EXTRA
+  "${CMAKE_CURRENT_SOURCE_DIR}/packaging/postrm")
 set(CPACK_DEBIAN_OFFS-BIN_FILE_NAME "offsd-0.1.1-Linux.deb")
 include(CPack)

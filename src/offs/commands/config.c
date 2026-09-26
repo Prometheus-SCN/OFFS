@@ -26,7 +26,7 @@ static void _print_config_help(void) {
     "  generate-auth <key> [--cost N]    Hash a key with bcrypt and set api_key_hash\n"
     "  reload                            Trigger an in-process config reload\n"
     "  help, --help                      Show this help\n\n"
-    "Staged changes write to {data_dir}/pending_config.json and only take effect\n"
+    "Staged changes write to {config_dir}/pending_config.json and only take effect\n"
     "after a daemon restart. 'reload' applies certain fields without a restart.\n\n"
     "Settable fields (type): description\n"
     "  String fields:\n"

@@ -204,7 +204,7 @@ int cmd_stop(int argc, char** argv, cli_client_t* client) {
 
 /* Read the running offsd's command-line args from /proc/<pid>/cmdline so the
  * restart preserves the original start flags (foreground, unix socket, cache
- * dir, data dir, port, config path, etc.). Returns the number of args read
+ * dir, config dir, port, config path, etc.). Returns the number of args read
  * (excluding argv[0]) into out_argv (caller frees), or 0 if none could be read. */
 #ifndef _WIN32
 static int _read_running_offsd_args(char*** out_argv) {
@@ -330,7 +330,7 @@ int cmd_restart(int argc, char** argv, cli_client_t* client) {
   /* If the user passed flags to restart (e.g. "offs restart --foreground"),
    * honor them. Otherwise, read the running daemon's start flags from
    * /proc/<pid>/cmdline so the restart preserves the original foreground
-   * mode, socket path, cache/data dirs, port, and config path.
+   * mode, socket path, cache/config dirs, port, and config path.
    *
    * Strip --foreground from the preserved flags so the restarted daemon
    * daemonizes to the background — otherwise it would eat the terminal of
