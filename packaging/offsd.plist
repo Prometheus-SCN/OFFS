@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  offsd launchd template — the macOS equivalent of the deb's offsd.service.
+
+  System daemon (root context; offsd's context defaults land its state in
+  /Library/Application Support/offs and /Library/Caches/offs):
+    sudo cp packaging/offsd.plist /Library/LaunchDaemons/scn.offsd.plist
+    sudo launchctl bootstrap system /Library/LaunchDaemons/scn.offsd.plist
+
+  Per-user agent: copy to ~/Library/LaunchAgents/scn.offsd.plist and
+  bootstrap the gui domain; the daemon's user-context defaults then land in
+  ~/Library/Application Support/offs and ~/Library/Caches/offs.
+
+  The plist passes the system paths explicitly so the service never depends
+  on ambient environment; remove those flags to let the context defaults
+  resolve. `offsd uninstall --config` / `--cache` removes the state dirs
+  (same paths this plist uses).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>scn.offsd</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/offsd</string>
+    <string>--foreground</string>
+    <string>--config-dir</string>
+    <string>/Library/Application Support/offs</string>
+    <string>--cache-dir</string>
+    <string>/Library/Caches/offs</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+</dict>
+</plist>
