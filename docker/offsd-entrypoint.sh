@@ -46,6 +46,6 @@ exec offsd --foreground \
   --node-cert "${CERT_PATH}" \
   --node-key "${KEY_PATH}" \
   --cache-dir /data/cache \
-  --data-dir /data/data \
+  --config-dir /data/data \
   ${EXTRA_ARGS} \
   "$@"

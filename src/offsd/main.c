@@ -27,9 +27,13 @@
 #include "ClientAPI/HTTP/config_routes.h"
 #include "Node/node.h"
 #include "Network/authority.h"
+#include "Network/endpoint.h"
 #include "Network/peer_book.h"
 #include "Network/network.h"
 #include "Network/peer_verify.h"
+#include "Network/pem_key.h"
+#include "Platform/platform_dirs.h"
+#include "Util/rm_rf.h"
 #include "OFFStreams/tuple_cache.h"
 #include "BlockCache/block_cache.h"
 #include "OFFStreams/ofd_cache.h"
@@ -167,7 +171,7 @@ typedef struct {
   uint16_t    quic_port;
   const char* unix_path;
   const char* cache_dir;
-  const char* data_dir;
+  const char* config_dir;
   const char* pid_file;
   int         worker_count;
   int         foreground;
@@ -199,13 +203,13 @@ typedef struct {
 static void _print_usage(const char* program) {
   fprintf(stderr, "Usage: %s [options]\n", program);
   fprintf(stderr, "Options:\n");
-  fprintf(stderr, "  --config <path>      Config file path (JSON)\n");
-  fprintf(stderr, "  --host <addr>        Bind address (default: 0.0.0.0)\n");
+  fprintf(stderr, "  --config <path>      Config file path (JSON). Default: $OFFS_CONFIG or /etc/offs/offs.json when present\n");
+  fprintf(stderr, "  --host <addr>        Bind address (default: 0.0.0.0; use :: for dual-stack)\n");
   fprintf(stderr, "  --port <port>        HTTP port, 0 to disable (default: 23402)\n");
   fprintf(stderr, "  --quic-port <port>   QUIC/P2P listener port, 0 to disable (default: 23401)\n");
   fprintf(stderr, "  --unix <path>        Unix socket path\n");
   fprintf(stderr, "  --cache-dir <dir>    Block cache directory\n");
-  fprintf(stderr, "  --data-dir <dir>     Persistent data directory\n");
+  fprintf(stderr, "  --config-dir <dir>   Node config/state directory (certs, peer store,\n                       pending config). Default: system path when run as root\n                       (/etc/offs; macOS /Library/Application Support/offs),\n                       ~/.config/offs otherwise\n");
   fprintf(stderr, "  --pid-file <path>    PID file path\n");
   fprintf(stderr, "  --workers <n>        Worker count, 0=auto (default: 0)\n");
   fprintf(stderr, "  --foreground         Run in foreground (do not daemonize)\n");
@@ -216,7 +220,7 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "  --ca-cert <path>      CA certificate PEM path\n");
   fprintf(stderr, "  --node-cert <path>    Node certificate PEM path\n");
   fprintf(stderr, "  --node-key <path>     Node private key PEM path\n");
-  fprintf(stderr, "  --relay-url <url>     Relay server URL (host:port or offs://host:port)\n");
+  fprintf(stderr, "  --relay-url <url>     Relay server URL (host:port, [ipv6]:port, or offs://host:port)\n");
   fprintf(stderr, "  --max-capacity-bytes <n>  Block cache capacity in bytes (default: 5368709120 = 5 GiB)\n");
   fprintf(stderr, "  --api-key <key>       API key for /peer/* routes. If omitted, a random key\n");
   fprintf(stderr, "                       is generated and printed to stdout on startup.\n");
@@ -237,15 +241,20 @@ static void _print_usage(const char* program) {
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
 static int _get_worker_count(void) {
+  /* Minimum 2: HTTP handlers run as actors on this pool and synchronously
+     round-trip other actors (e.g. POST /friends → the peer-book actor). A
+     single worker deadlocks those round-trips until their timeout — on a
+     1-vCPU host (Azure ACI) every peer-book write 500'd, so friends were
+     never persisted and nodes came back empty after a restart. */
 #ifdef _WIN32
   SYSTEM_INFO sysinfo;
   GetSystemInfo(&sysinfo);
-  return sysinfo.dwNumberOfProcessors > 0 ? (int)sysinfo.dwNumberOfProcessors : 1;
+  int nprocs = (int)sysinfo.dwNumberOfProcessors;
 #else
-  long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
-  if (nprocs < 1) return 1;
-  return (int)nprocs;
+  long nprocs_long = sysconf(_SC_NPROCESSORS_ONLN);
+  int nprocs = nprocs_long < 1 ? 1 : (int)nprocs_long;
 #endif
+  return nprocs < 2 ? 2 : nprocs;
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -281,10 +290,10 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
   /* [daemon] section */
   cJSON* daemon = cJSON_GetObjectItem(root, "daemon");
   if (daemon != NULL) {
-    cJSON* data_dir = cJSON_GetObjectItem(daemon, "data-dir");
-    if (cJSON_IsString(data_dir) && args->data_dir == NULL) {
-      args->data_dir = strdup(data_dir->valuestring);
-      if (args->data_dir == NULL) { cJSON_Delete(root); return -1; }
+    cJSON* config_dir = cJSON_GetObjectItem(daemon, "config-dir");
+    if (cJSON_IsString(config_dir) && args->config_dir == NULL) {
+      args->config_dir = strdup(config_dir->valuestring);
+      if (args->config_dir == NULL) { cJSON_Delete(root); return -1; }
     }
     cJSON* pid_file = cJSON_GetObjectItem(daemon, "pid-file");
     if (cJSON_IsString(pid_file) && args->pid_file == NULL) {
@@ -474,8 +483,8 @@ static int _parse_args(int argc, char** argv, offsd_args_t* args) {
       if (_arg_string_set(&args->unix_path, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--cache-dir") == 0 && i + 1 < argc) {
       if (_arg_string_set(&args->cache_dir, argv[++i]) != 0) return -1;
-    } else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc) {
-      if (_arg_string_set(&args->data_dir, argv[++i]) != 0) return -1;
+    } else if (strcmp(argv[i], "--config-dir") == 0 && i + 1 < argc) {
+      if (_arg_string_set(&args->config_dir, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--pid-file") == 0 && i + 1 < argc) {
       if (_arg_string_set(&args->pid_file, argv[++i]) != 0) return -1;
     } else if (strcmp(argv[i], "--workers") == 0 && i + 1 < argc) {
@@ -582,7 +591,7 @@ static void _remove_pid_file(const char* path) {
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
 static void _free_args(offsd_args_t* args) {
-  free((void*)args->data_dir);
+  free((void*)args->config_dir);
   free((void*)args->pid_file);
   free((void*)args->host);
   free((void*)args->unix_path);
@@ -709,14 +718,14 @@ static void _init_health_context(offsd_server_t* server, block_cache_t* bc) {
   server->health_ctx.draining = &server->draining_val;
 }
 
-static int _startup(offsd_server_t* server, const offsd_args_t* args,
+static int _startup(offsd_server_t* server, offsd_args_t* args,
                     config_t* override_config) {
   memset(server, 0, sizeof(*server));
 
   /* Ensure cache and data directories exist before subsystems use them.
-   * config_pending_save writes to {data_dir}/pending_config.json; the block
+   * config_pending_save writes to {config_dir}/pending_config.json; the block
    * cache writes section files under {cache_dir}. Without this, a missing
-   * data_dir surfaces as a cryptic "failed to write pending config" on the
+   * config_dir surfaces as a cryptic "failed to write pending config" on the
    * first config set, and a missing cache_dir fails block_cache_create. */
   if (args->cache_dir != NULL && mkdir_p((char*)args->cache_dir) != 0) {
     fprintf(stderr, "Failed to create cache directory: %s\n", args->cache_dir);
@@ -726,8 +735,8 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
     }
     return -1;
   }
-  if (args->data_dir != NULL && mkdir_p((char*)args->data_dir) != 0) {
-    fprintf(stderr, "Failed to create data directory: %s\n", args->data_dir);
+  if (args->config_dir != NULL && mkdir_p((char*)args->config_dir) != 0) {
+    fprintf(stderr, "Failed to create data directory: %s\n", args->config_dir);
     if (override_config != NULL) {
       config_free_members(override_config);
       free(override_config);
@@ -930,6 +939,49 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
       return -1;
     }
   }
+  /* First-launch cert generation: when no node cert is configured (CLI or
+     [tls] section), default to <config-dir>/certs so the QUIC TLS identity —
+     and therefore the node_id — is durable across restarts without the
+     docker entrypoint's openssl step. When a path IS configured but the
+     cert is absent (fresh volume, wiped data dir), generate it at the
+     configured path. Existing certs are never overwritten, so restarts
+     keep the same identity. */
+  if (args->node_cert_path == NULL && args->node_key_path == NULL &&
+      args->config_dir != NULL) {
+    char* default_cert = path_join(args->config_dir, "certs/node.pem");
+    char* default_key = path_join(args->config_dir, "certs/node-key.pem");
+    if (default_cert != NULL && default_key != NULL) {
+      if (access(default_cert, F_OK) != 0 || access(default_key, F_OK) != 0) {
+        if (pem_generate_self_signed_cert(default_cert, default_key,
+                                          "offs-offsd") == 0) {
+          fprintf(stderr, "Generated self-signed node cert at %s\n",
+                  default_cert);
+        } else {
+          fprintf(stderr, "Failed to generate self-signed node cert at %s "
+                          "(QUIC will be unavailable)\n", default_cert);
+        }
+      }
+      /* Adopt the paths whether generated or pre-existing so restarts
+         reuse the same identity files. */
+      args->node_cert_path = default_cert;
+      args->node_key_path = default_key;
+    } else {
+      free(default_cert);
+      free(default_key);
+    }
+  } else if (args->node_cert_path != NULL && args->node_key_path != NULL &&
+             (access(args->node_cert_path, F_OK) != 0 ||
+              access(args->node_key_path, F_OK) != 0)) {
+    if (pem_generate_self_signed_cert(args->node_cert_path,
+                                      args->node_key_path,
+                                      "offs-offsd") == 0) {
+      fprintf(stderr, "Generated self-signed node cert at %s\n",
+              args->node_cert_path);
+    } else {
+      fprintf(stderr, "Failed to generate self-signed node cert at %s\n",
+              args->node_cert_path);
+    }
+  }
   if (args->node_cert_path != NULL) {
     server->authority->node_cert_path = strdup(args->node_cert_path);
     if (server->authority->node_cert_path == NULL) {
@@ -964,8 +1016,8 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
   /* Persist peer state (node ID, friends, hebbian weights, ring peers) across
      restarts. The peer store path lives under the daemon's data directory so it
      is backed up alongside pending config and other node-local state. */
-  if (args->data_dir != NULL) {
-    server->authority->peer_store_path = path_join(args->data_dir, "peer_store.cbor");
+  if (args->config_dir != NULL) {
+    server->authority->peer_store_path = path_join(args->config_dir, "peer_store.cbor");
   }
 
   /* Seed the config-seeded (immutable-at-runtime) bootstrap list from
@@ -1039,7 +1091,7 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
     peer_routes_register(server->http_server, &server->node,
                          &server->config, "enabled");
     config_routes_register(server->http_server, &server->node,
-                           &server->config, args->data_dir,
+                           &server->config, args->config_dir,
                            _request_restart, NULL);
   }
 
@@ -1166,11 +1218,11 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
     }
     /* Wire config management onto the local socket so `offs config show/set/
        generate-auth/reload` reach the node + pending-config store. node is
-       borrowed (owned by server); data_dir is copied by the setter. The restart
+       borrowed (owned by server); config_dir is copied by the setter. The restart
        trigger hands `config reload` to the main loop instead of running
        offs_node_restart on this pool worker. */
     unix_transport_set_config_ctx(server->unix_transport, &server->node,
-                                  args->data_dir, _request_restart, NULL);
+                                  args->config_dir, _request_restart, NULL);
   }
 
   /* Update actor — auto-update checks.
@@ -1229,12 +1281,84 @@ static int _startup(offsd_server_t* server, const offsd_args_t* args,
  * into the initial _startup avoids that.
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
-static config_t* _load_pending_override(const char* data_dir) {
-  if (data_dir == NULL) return NULL;
-  if (config_pending_exists(data_dir) != 1) return NULL;
-  config_t* cfg = config_pending_load(data_dir);
+/* `offsd uninstall [--config] [--cache] [--config-dir <dir>] [--cache-dir <dir>]`
+   Removes state directories. Without an explicit --config/--cache choice it
+   prints usage and does nothing — deletion is never implicit. Paths resolve
+   to the context defaults (the same the daemon uses) unless overridden. */
+static int _run_uninstall(int argc, char** argv) {
+  bool remove_config = false;
+  bool remove_cache = false;
+  const char* config_dir = NULL;
+  const char* cache_dir = NULL;
+  /* argv[0] is the subcommand name ("uninstall"). */
+  for (int index = 1; index < argc; index++) {
+    if (strcmp(argv[index], "--config") == 0) {
+      remove_config = true;
+    } else if (strcmp(argv[index], "--cache") == 0) {
+      remove_cache = true;
+    } else if (strcmp(argv[index], "--config-dir") == 0 && index + 1 < argc) {
+      config_dir = argv[++index];
+    } else if (strcmp(argv[index], "--cache-dir") == 0 && index + 1 < argc) {
+      cache_dir = argv[++index];
+    } else {
+      fprintf(stderr, "offsd uninstall: unknown option %s\n", argv[index]);
+      fprintf(stderr, "Usage: offsd uninstall [--config] [--cache] "
+                      "[--config-dir <dir>] [--cache-dir <dir>]\n");
+      return 1;
+    }
+  }
+  if (!remove_config && !remove_cache) {
+    fprintf(stderr, "offsd uninstall: choose what to remove\n");
+    fprintf(stderr, "  --config   node identity (certs, peer store, pending config)\n");
+    fprintf(stderr, "  --cache    block cache\n");
+    fprintf(stderr, "Usage: offsd uninstall [--config] [--cache] "
+                    "[--config-dir <dir>] [--cache-dir <dir>]\n");
+    return 1;
+  }
+
+  offs_default_dirs_t defaults;
+  if (offs_default_dirs_get(&defaults) != 0) {
+    fprintf(stderr, "offsd uninstall: cannot determine default state "
+                    "directories (no HOME?) — pass --config-dir/--cache-dir\n");
+    return 1;
+  }
+  if (config_dir == NULL) config_dir = defaults.config_dir;
+  if (cache_dir == NULL) cache_dir = defaults.cache_dir;
+
+  int failed = 0;
+  if (remove_cache) {
+    struct stat cache_st;
+    if (stat(cache_dir, &cache_st) != 0) {
+      printf("Cache dir already absent: %s\n", cache_dir);
+    } else if (rm_rf(cache_dir) != 0) {
+      fprintf(stderr, "offsd uninstall: failed to remove cache dir %s\n",
+              cache_dir);
+      failed = 1;
+    } else {
+      printf("Removed cache dir: %s\n", cache_dir);
+    }
+  }
+  if (remove_config) {
+    struct stat config_st;
+    if (stat(config_dir, &config_st) != 0) {
+      printf("Config dir already absent: %s\n", config_dir);
+    } else if (rm_rf(config_dir) != 0) {
+      fprintf(stderr, "offsd uninstall: failed to remove config dir %s\n",
+              config_dir);
+      failed = 1;
+    } else {
+      printf("Removed config dir: %s\n", config_dir);
+    }
+  }
+  return failed;
+}
+
+static config_t* _load_pending_override(const char* config_dir) {
+  if (config_dir == NULL) return NULL;
+  if (config_pending_exists(config_dir) != 1) return NULL;
+  config_t* cfg = config_pending_load(config_dir);
   if (cfg != NULL) {
-    config_pending_mark_applied(data_dir);
+    config_pending_mark_applied(config_dir);
   }
   return cfg;
 }
@@ -1258,6 +1382,18 @@ static void _start_listening(offsd_server_t* server,
       printf("Listening on quic://%s:%u\n", args->host, args->quic_port);
     } else {
       fprintf(stderr, "Warning: failed to start QUIC listener on %s:%u\n", args->host, args->quic_port);
+    }
+
+    /* Start the mDNS responder so same-LAN peers discover this node without
+       a configured bootstrap list (announces node_id + quic_port, answers
+       other peers' announces by connecting back). Optional subsystem: a
+       failure (no multicast route, port busy, Windows stub) must not abort
+       startup — the node still works with explicit bootstrap peers. */
+    if (network_start_mdns(server->network) != 0) {
+      fprintf(stderr,
+              "Warning: failed to start mDNS responder — LAN auto-discovery disabled\n");
+    } else {
+      printf("mDNS discovery started (announcing on %u)\n", args->quic_port);
     }
   }
 
@@ -1288,7 +1424,9 @@ static void _start_listening(offsd_server_t* server,
   }
 
   /* Connect to the relay server for NAT traversal and server-reflexive address
-     discovery. The relay_url is "host:port" (optionally "offs://host:port").
+     discovery. The relay_url is "host:port" (optionally "offs://host:port"),
+     with bracketed IPv6 literals "[ipv6]:port" also accepted. endpoint_parse
+     strips the brackets so the relay client sees a bare v6 literal.
      The relay provides server-reflexive address discovery and forwards opaque
      WIRE_RELAY_SEND envelopes between peers behind NAT. After relay-mediated
      rendezvous, peers attempt UDP hole punching to establish a direct QUIC
@@ -1296,21 +1434,25 @@ static void _start_listening(offsd_server_t* server,
   if (args->relay_url != NULL && server->network != NULL) {
     const char* url = args->relay_url;
     if (strncmp(url, "offs://", 7) == 0) url += 7;
-    const char* colon = strrchr(url, ':');
-    if (colon != NULL) {
-      char* host = strndup(url, (size_t)(colon - url));
-      if (host != NULL) {
-        uint16_t relay_port = (uint16_t)atoi(colon + 1);
-        if (relay_port > 0) {
-          if (network_connect_relay(server->network, host, relay_port) == 0) {
-            printf("Connected to relay %s:%u\n", host, relay_port);
-          } else {
-            fprintf(stderr, "Warning: failed to connect to relay %s:%u\n",
-                    host, relay_port);
-          }
-        }
-        free(host);
+    char relay_host[256];
+    uint16_t relay_port = 0;
+    if (endpoint_parse(url, relay_host, sizeof(relay_host), &relay_port) == 0) {
+      /* endpoint_host_header brackets v6 literals (RFC 3986) for display. */
+      char relay_display[300];
+      if (endpoint_host_header(relay_host, relay_port, relay_display,
+                               sizeof(relay_display)) != 0) {
+        relay_display[0] = '\0';
       }
+      if (network_connect_relay(server->network, relay_host, relay_port) == 0) {
+        printf("Connected to relay %s\n", relay_display);
+      } else {
+        fprintf(stderr, "Warning: failed to connect to relay %s\n",
+                relay_display);
+      }
+    } else {
+      fprintf(stderr,
+              "Warning: invalid relay URL %s (expected host:port or [ipv6]:port)\n",
+              args->relay_url);
     }
   }
 
@@ -1356,6 +1498,10 @@ static void _shutdown(offsd_server_t* server, const char* pid_file) {
 
   /* 3. Save peers and stop network connections */
   if (server->network != NULL) {
+    /* Stop the mDNS responder first: its announce thread reads network state
+       and can fire connect attempts, which must not race the shutdown of
+       the connections and the peer-book actor below. */
+    network_stop_mdns(server->network);
     /* Quiesce the peer-book actor before the direct-read save so the
        reconnect tick can no longer race the list reads (peer_book.h
        invariant (b)). */
@@ -1439,9 +1585,10 @@ int main(int argc, char** argv) {
    * value and strdups the new one. */
   offsd_args_t args;
   memset(&args, 0, sizeof(args));
-  if (_arg_string_set(&args.host, "0.0.0.0") != 0 ||
-      _arg_string_set(&args.cache_dir, "./offs_cache") != 0 ||
-      _arg_string_set(&args.data_dir, ".") != 0) {
+  /* cache_dir/config_dir are intentionally left NULL here: the context
+     defaults (offs_default_dirs_get) fill them unless the operator set
+     explicit flags or a config file value. */
+  if (_arg_string_set(&args.host, "0.0.0.0") != 0) {
     fprintf(stderr, "Error: allocation failure during startup\n");
     _free_args(&args);
     return 1;
@@ -1451,10 +1598,70 @@ int main(int argc, char** argv) {
   args.worker_count = 0;
   args.foreground = 0;
 
+  /* Default config file: when --config is absent, fall back to $OFFS_CONFIG
+     then /etc/offs/offs.json. This ships the network entry points (relay +
+     bootstrap) as a config-file default instead of baking them into the
+     binary. Explicit --config disables the fallback entirely; CLI flags
+     still override values from the file (config parsing only fills fields
+     the flags left NULL). */
+  if (args.config_path == NULL) {
+    const char* default_config = getenv("OFFS_CONFIG");
+    if (default_config == NULL || default_config[0] == '\0') {
+      default_config = "/etc/offs/offs.json";
+    }
+    struct stat default_config_st;
+    if (stat(default_config, &default_config_st) == 0 &&
+        S_ISREG(default_config_st.st_mode)) {
+      args.config_path = default_config;
+    }
+  }
+
   /* Parse CLI flags and config file */
+  /* `offsd uninstall` — removes the node's state directories. The operator
+     chooses what to drop: --config (identity: certs, peer store, pending
+     config) and/or --cache (block cache). Paths default to the same
+     context defaults the daemon uses, so removal always targets the
+     directories creation used; explicit --config-dir/--cache-dir override.
+     Package-owned service files (systemd unit, binaries) are the
+     installer's job and are never touched here. */
+  if (argc > 1 && strcmp(argv[1], "uninstall") == 0) {
+    return _run_uninstall(argc - 1, argv + 1);
+  }
+
   int parse_result = _parse_args(argc, argv, &args);
   if (parse_result != 0) {
     return parse_result > 0 ? 0 : 1;
+  }
+
+  /* Default state directories by context when not configured: root /
+     service contexts get the system paths, regular users their XDG
+     (macOS Library / Windows LOCALAPPDATA) paths. Explicit flags and the
+     config file always win. Both are always non-NULL from here on — a
+     missing cache dir previously made block_cache_create fail. */
+  if (args.cache_dir == NULL || args.config_dir == NULL) {
+    offs_default_dirs_t defaults;
+    if (offs_default_dirs_get(&defaults) != 0) {
+      fprintf(stderr, "Cannot determine default state directories "
+                      "(no HOME?) — pass --config-dir/--cache-dir\n");
+      _free_args(&args);
+      return 1;
+    }
+    if (args.config_dir == NULL) {
+      args.config_dir = strdup(defaults.config_dir);
+      if (args.config_dir == NULL) {
+        fprintf(stderr, "Out of memory copying config dir\n");
+        _free_args(&args);
+        return 1;
+      }
+    }
+    if (args.cache_dir == NULL) {
+      args.cache_dir = strdup(defaults.cache_dir);
+      if (args.cache_dir == NULL) {
+        fprintf(stderr, "Out of memory copying cache dir\n");
+        _free_args(&args);
+        return 1;
+      }
+    }
   }
 
   /* Apply log configuration */
@@ -1479,7 +1686,7 @@ int main(int argc, char** argv) {
     printf("  QUIC: %u\n", args.quic_port);
   }
   printf("  Cache: %s\n", args.cache_dir);
-  printf("  Data: %s\n", args.data_dir);
+  printf("  Config: %s\n", args.config_dir);
   printf("  Workers: %d\n", args.worker_count);
   if (args.ws_port != 0) {
     printf("  WebSocket: %u\n", args.ws_port);
@@ -1505,7 +1712,7 @@ int main(int argc, char** argv) {
      config (folded into the first _startup) instead of running offs_node_restart
      after _startup — the old _apply_pending_config destroyed the shared pool the
      transport had already borrowed. */
-  config_t* cfg = _load_pending_override(args.data_dir);
+  config_t* cfg = _load_pending_override(args.config_dir);
 
   offsd_server_t server;
   for (;;) {
@@ -1561,7 +1768,7 @@ int main(int argc, char** argv) {
       break;
     }
     ATOMIC_STORE(&g_restart_requested, 0);
-    cfg = _load_pending_override(args.data_dir);
+    cfg = _load_pending_override(args.config_dir);
   }
 
   _free_args(&args);

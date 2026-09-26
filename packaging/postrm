@@ -1,0 +1,8 @@
+#!/bin/sh
+# Purge removes the daemon's state: the config dir (node identity — certs,
+# peer store, pending config) and the block cache. `dpkg -r` / apt remove
+# keeps them; `dpkg -P` / apt purge drops them.
+if [ "$1" = "purge" ]; then
+  rm -rf /var/lib/offs
+  rm -rf /etc/offs
+fi

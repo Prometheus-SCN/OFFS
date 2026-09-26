@@ -7,7 +7,8 @@
 #           offs-offsd
 #
 # Without mounted certs, a self-signed node cert is generated on first start.
-# The cache and peer_store persist under /data (mount a volume for persistence).
+# The cache and node state (config dir) persist under /data (mount a volume
+# for persistence).
 
 # --- Builder stage: compile offsd and all dependencies ---
 FROM ubuntu:24.04 AS builder
@@ -79,6 +80,10 @@ COPY --from=builder /build/offs/build/offsd /usr/bin/offsd
 # Cert mount point and data directories
 RUN mkdir -p /etc/offs/certs /data/cache /data/data
 
+# Default config: network entry points (Azure-hosted relay + bootstrap).
+# Loaded by offsd automatically when --config is absent.
+COPY docker/offs-default.json /etc/offs/offs.json
+
 # Entrypoint that generates a self-signed node cert if none is mounted
 COPY docker/offsd-entrypoint.sh /usr/local/bin/offsd-entrypoint.sh
 RUN chmod +x /usr/local/bin/offsd-entrypoint.sh
@@ -86,7 +91,11 @@ RUN chmod +x /usr/local/bin/offsd-entrypoint.sh
 EXPOSE 23401/udp
 EXPOSE 23402/tcp
 
+# Default network entry points: the Azure-hosted relay and bootstrap node.
+# The entrypoint passes RELAY_URL through as --relay-url; the offsd binary
+# itself defaults --bootstrap to the same bootstrap node.
+ENV RELAY_URL=20.163.130.127:14000
 ENTRYPOINT ["/usr/local/bin/offsd-entrypoint.sh"]
 CMD ["--host", "0.0.0.0", "--quic-port", "23401", "--port", "23402", \
-     "--cache-dir", "/data/cache", "--data-dir", "/data/data", \
+     "--cache-dir", "/data/cache", "--config-dir", "/data/data", \
      "--max-capacity-bytes", "107374182400"]
