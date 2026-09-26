@@ -58,6 +58,7 @@
 #include <string.h>
 #include <signal.h>
 #include <time.h>
+#include "Platform/platform_posix_compat.h"
 #ifndef _WIN32
 #include <unistd.h>
 #endif
