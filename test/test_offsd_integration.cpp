@@ -521,6 +521,13 @@ static int file_exists_nonempty(const char* path) {
  * shuts down. If offsd never set authority->peer_store_path, no file would
  * appear (authority_save_peers returns -1 early). */
 TEST_F(OffsdIntegrationTest, PeerStoreWrittenOnShutdown) {
+#ifdef _WIN32
+  /* Windows can't signal a child process: daemon_proc_stop uses
+   * TerminateProcess (no signal-driven graceful shutdown exists for offsd —
+   * it has no RPC shutdown route), so the shutdown-time peer-store save
+   * never runs and the assertion below can never hold. */
+  GTEST_SKIP() << "Windows fixture hard-kills the daemon; no graceful shutdown path";
+#endif
   if (!daemon_ready) {
     GTEST_SKIP() << "Daemon failed to start";
   }
@@ -542,6 +549,11 @@ TEST_F(OffsdIntegrationTest, PeerStoreWrittenOnShutdown) {
  * crashing, proving the file is in a valid CBOR format that
  * authority_load_peers can consume. */
 TEST_F(OffsdIntegrationTest, DaemonRestartsWithPersistedPeerStore) {
+#ifdef _WIN32
+  /* Same as PeerStoreWrittenOnShutdown: the first daemon is hard-killed, so
+   * peer_store.cbor is never written and there is nothing to restart on. */
+  GTEST_SKIP() << "Windows fixture hard-kills the daemon; no graceful shutdown path";
+#endif
   if (!daemon_ready) {
     GTEST_SKIP() << "Daemon failed to start";
   }
