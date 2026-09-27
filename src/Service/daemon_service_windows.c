@@ -74,6 +74,10 @@ static void WINAPI _service_main(DWORD argc, LPWSTR* argv) {
   /* Startup is allowed to take a while (cert generation, listener bind); the
    * START_PENDING wait hint above tells the SCM to keep waiting. */
   if (g_run_body != NULL) {
+    /* The daemon body runs for the service's lifetime, so RUNNING must be
+     * reported before it starts — otherwise the SCM shows START_PENDING
+     * forever and rejects the STOP control the MSI's uninstall sends. */
+    _service_report(SERVICE_RUNNING, 0, 0);
     int rc = g_run_body(__argc, __argv);
     _service_report(SERVICE_STOPPED, (rc == 0) ? 0 : (DWORD)rc, 3000);
   } else {
