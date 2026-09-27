@@ -59,6 +59,7 @@
 #include <signal.h>
 #include <time.h>
 #include "Platform/platform_posix_compat.h"
+#include "Service/daemon_service.h"
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -105,6 +106,15 @@ static void _signal_handler(int sig) {
 static void _request_restart(void* user_data) {
   (void)user_data;
   ATOMIC_STORE(&g_restart_requested, 1);
+}
+
+/* SCM stop notification (Windows service). Runs on the SCM's control-handler
+   thread, so it must only touch atomics — the main loop observes the flag
+   and performs the full teardown on its own thread. */
+static void _service_stop_handler(void) {
+  if (g_node != NULL) {
+    ATOMIC_STORE(&g_node->running, 0);
+  }
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -204,13 +214,13 @@ typedef struct {
 static void _print_usage(const char* program) {
   fprintf(stderr, "Usage: %s [options]\n", program);
   fprintf(stderr, "Options:\n");
-  fprintf(stderr, "  --config <path>      Config file path (JSON). Default: $OFFS_CONFIG or /etc/offs/offs.json when present\n");
+  fprintf(stderr, "  --config <path>      Config file path (JSON). Default: $OFFS_CONFIG or the\n                       platform default (%%ProgramData%%\\offs\\offs.json on\n                       Windows, /etc/offs/offs.json otherwise) when present\n");
   fprintf(stderr, "  --host <addr>        Bind address (default: 0.0.0.0; use :: for dual-stack)\n");
   fprintf(stderr, "  --port <port>        HTTP port, 0 to disable (default: 23402)\n");
   fprintf(stderr, "  --quic-port <port>   QUIC/P2P listener port, 0 to disable (default: 23401)\n");
   fprintf(stderr, "  --unix <path>        Unix socket path\n");
   fprintf(stderr, "  --cache-dir <dir>    Block cache directory\n");
-  fprintf(stderr, "  --config-dir <dir>   Node config/state directory (certs, peer store,\n                       pending config). Default: system path when run as root\n                       (/etc/offs; macOS /Library/Application Support/offs),\n                       ~/.config/offs otherwise\n");
+  fprintf(stderr, "  --config-dir <dir>   Node config/state directory (certs, peer store,\n                       pending config). Default: machine state dir —\n                       %%ProgramData%%\\offs on Windows (always), /etc/offs\n                       as root (macOS /Library/Application Support/offs),\n                       ~/.config/offs otherwise\n");
   fprintf(stderr, "  --pid-file <path>    PID file path\n");
   fprintf(stderr, "  --workers <n>        Worker count, 0=auto (default: 0)\n");
   fprintf(stderr, "  --foreground         Run in foreground (do not daemonize)\n");
@@ -1580,7 +1590,9 @@ static void _shutdown(offsd_server_t* server, const char* pid_file) {
  * main
  *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
 
-int main(int argc, char** argv) {
+/* The daemon body, shared by the console entry point and the Windows service
+   ServiceMain. Returns the process exit code. */
+static int _run_offsd(int argc, char** argv) {
   /* Default arguments — string fields are heap-allocated so _free_args can
    * free them uniformly. _arg_string_set frees the prior (NULL after memset)
    * value and strdups the new one. */
@@ -1600,18 +1612,36 @@ int main(int argc, char** argv) {
   args.foreground = 0;
 
   /* Default config file: when --config is absent, fall back to $OFFS_CONFIG
-     then /etc/offs/offs.json. This ships the network entry points (relay +
-     bootstrap) as a config-file default instead of baking them into the
-     binary. Explicit --config disables the fallback entirely; CLI flags
-     still override values from the file (config parsing only fills fields
-     the flags left NULL). */
+     then the platform default (/etc/offs/offs.json; Windows:
+     %ProgramData%\offs\offs.json — the same machine-wide root the daemon's
+     default state dirs live under, see offs_default_dirs_get). This ships
+     the network entry points (relay + bootstrap) as a config-file default
+     instead of baking them into the binary. Explicit --config disables the
+     fallback entirely; CLI flags still override values from the file
+     (config parsing only fills fields the flags left NULL). */
   if (args.config_path == NULL) {
     const char* default_config = getenv("OFFS_CONFIG");
+#ifdef _WIN32
+    char program_data[MAX_PATH];
+    char default_config_buf[MAX_PATH];
+    if ((default_config == NULL || default_config[0] == '\0') &&
+        GetEnvironmentVariableA("ProgramData", program_data,
+                                MAX_PATH) > 0) {
+      int written = snprintf(default_config_buf,
+                             sizeof(default_config_buf),
+                             "%s\\offs\\offs.json", program_data);
+      if (written > 0 && (size_t)written < sizeof(default_config_buf)) {
+        default_config = default_config_buf;
+      }
+    }
+#else
     if (default_config == NULL || default_config[0] == '\0') {
       default_config = "/etc/offs/offs.json";
     }
+#endif
     struct stat default_config_st;
-    if (stat(default_config, &default_config_st) == 0 &&
+    if (default_config != NULL &&
+        stat(default_config, &default_config_st) == 0 &&
         S_ISREG(default_config_st.st_mode)) {
       args.config_path = default_config;
     }
@@ -1733,6 +1763,7 @@ int main(int argc, char** argv) {
 
     /* Register signal handlers — must be after the node is populated. */
     g_node = &server.node;
+    daemon_service_set_stop_handler(_service_stop_handler);
     signal(SIGINT, _signal_handler);
 #ifndef _WIN32
     signal(SIGTERM, _signal_handler);
@@ -1748,10 +1779,12 @@ int main(int argc, char** argv) {
     /* Start listening */
     _start_listening(&server, &args);
 
-    /* Main loop — wait until a signal clears running (shutdown) or a reload
-       RPC sets g_restart_requested. Poll lightly (200 ms) so both flags are
-       observed on every platform; a signal interrupts the sleep early. */
+    /* Main loop — wait until a signal clears running (shutdown), the SCM
+       requests a service stop, or a reload RPC sets g_restart_requested.
+       Poll lightly (200 ms) so all three flags are observed on every
+       platform; a signal interrupts the sleep early. */
     while (ATOMIC_LOAD(&server.node.running) &&
+           !daemon_service_stop_requested() &&
            !ATOMIC_LOAD(&g_restart_requested)) {
       platform_sleep_ms(200);
     }
@@ -1774,4 +1807,19 @@ int main(int argc, char** argv) {
 
   _free_args(&args);
   return 0;
+}
+
+/* Entry point. When the SCM launches the installed offs-daemon service, the
+ * dispatcher takes over and runs _run_offsd on its ServiceMain thread; a
+ * plain console run fails with ERROR_FAILED_SERVICE_CONTROLLER_CONNECT and
+ * falls through to the normal path. */
+int main(int argc, char** argv) {
+  int service_rc = daemon_service_try_run(_run_offsd);
+  if (service_rc > 0) {
+    return 0;  /* Ran under the service dispatcher; its body already exited. */
+  }
+  if (service_rc < 0) {
+    return 1;  /* Dispatcher registration failed for a reason other than console. */
+  }
+  return _run_offsd(argc, argv);
 }

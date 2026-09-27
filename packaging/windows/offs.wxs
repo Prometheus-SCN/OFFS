@@ -32,6 +32,12 @@
           <Component Id="OffsCa" Guid="52345678-1234-1234-1234-123456789ABC">
             <File Id="offsCaExe" Name="offs-ca.exe" Source="offs-ca.exe" KeyPath="yes" />
           </Component>
+          <!-- The daemon loads QUIC via msquic.dll from the DLL search path;
+               the in-tree build provides no system libmsquic, so it must be
+               installed beside offs-daemon.exe or the QUIC bootstrap fails. -->
+          <Component Id="MsquicDll" Guid="62345678-1234-1234-1234-123456789ABC">
+            <File Id="msquicDll" Name="msquic.dll" Source="msquic.dll" KeyPath="yes" />
+          </Component>
         </Directory>
       </Directory>
     </Directory>
@@ -40,6 +46,7 @@
       <ComponentRef Id="OffsCli" />
       <ComponentRef Id="OffsUpdater" />
       <ComponentRef Id="OffsCa" />
+      <ComponentRef Id="MsquicDll" />
     </ComponentGroup>
   </Product>
 </Wix>

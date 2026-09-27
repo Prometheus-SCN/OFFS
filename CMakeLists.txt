@@ -77,6 +77,14 @@ target_link_libraries(offsd PRIVATE hashmap)
 target_link_libraries(offsd PRIVATE http-parser)
 target_link_libraries(offsd PRIVATE ${OFFS_CBOR_LIB})
 target_link_libraries(offsd PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+if(WIN32)
+  # SCM service entry: the installed offs-daemon service is launched directly
+  # by the Service Control Manager, which kills a process that never registers
+  # with StartServiceCtrlDispatcher (error 1053). The daemon_service module
+  # provides the dispatcher bridge; advapi32 is the SCM API library.
+  target_sources(offsd PRIVATE src/Service/daemon_service_windows.c)
+  target_link_libraries(offsd PRIVATE advapi32)
+endif()
 # cbor is a directory-scoped IMPORTED target inside the liboffs subdirectory,
 # so it is not visible here by name and we link its archive via the
 # OFFS_CBOR_LIB path string above. offs_cbor_archive gives ninja a producing
@@ -92,6 +100,7 @@ if(NOT WIN32)
   target_link_libraries(offsd PRIVATE pthread)
   target_link_libraries(offsd PRIVATE m)
 endif()
+target_include_directories(offsd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_include_directories(offsd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/liboffs/src)
 target_include_directories(offsd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/liboffs/deps/cJSON)
 target_include_directories(offsd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/liboffs/deps/http-parser)
