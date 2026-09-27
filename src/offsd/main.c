@@ -33,6 +33,7 @@
 #include "Network/peer_verify.h"
 #include "Network/pem_key.h"
 #include "Platform/platform_dirs.h"
+#include "Service/local_socket.h"
 #include "Util/rm_rf.h"
 #include "OFFStreams/tuple_cache.h"
 #include "BlockCache/block_cache.h"
@@ -218,7 +219,11 @@ static void _print_usage(const char* program) {
   fprintf(stderr, "  --host <addr>        Bind address (default: 0.0.0.0; use :: for dual-stack)\n");
   fprintf(stderr, "  --port <port>        HTTP port, 0 to disable (default: 23402)\n");
   fprintf(stderr, "  --quic-port <port>   QUIC/P2P listener port, 0 to disable (default: 23401)\n");
-  fprintf(stderr, "  --unix <path>        Unix socket path\n");
+  fprintf(stderr, "  --unix <path>        Local RPC socket path (Windows default: %s,\n"
+                  "                       mapped by platform_local to the named pipe\n"
+                  "                       \\.\\pipe\\liboffs-<basename>; POSIX: no default —\n"
+                  "                       pass --unix to enable the local socket)\n",
+          OFFS_LOCAL_SOCKET_PATH);
   fprintf(stderr, "  --cache-dir <dir>    Block cache directory\n");
   fprintf(stderr, "  --config-dir <dir>   Node config/state directory (certs, peer store,\n                       pending config). Default: machine state dir —\n                       %%ProgramData%%\\offs on Windows (always), /etc/offs\n                       as root (macOS /Library/Application Support/offs),\n                       ~/.config/offs otherwise\n");
   fprintf(stderr, "  --pid-file <path>    PID file path\n");
@@ -563,6 +568,19 @@ static int _parse_args(int argc, char** argv, offsd_args_t* args) {
   if (args->worker_count < 1) {
     args->worker_count = 1;
   }
+
+#ifdef _WIN32
+  /* The SCM launches the service binary with no arguments (offs.wxs
+   * ServiceInstall has no arguments), so without a default the local RPC
+   * socket would never exist and the CLI could not reach the daemon.
+   * Default to the same path the CLI assumes; on Windows platform_local
+   * maps it to the \\.\pipe\liboffs-<basename> named pipe. _free_args
+   * frees this field, so it must go through _arg_string_set (strdup),
+   * never a string literal. */
+  if (args->unix_path == NULL) {
+    if (_arg_string_set(&args->unix_path, OFFS_LOCAL_SOCKET_PATH) != 0) return -1;
+  }
+#endif
 
   return 0;
 }

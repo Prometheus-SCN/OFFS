@@ -4,6 +4,7 @@
 
 #include "../client.h"
 #include "../l10n/en.h"
+#include "../../Service/local_socket.h"
 #include "Platform/platform_time.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,9 +20,10 @@
 #include <sys/wait.h>
 #endif
 
-/* Default daemon socket path. Kept in sync with main.c's DEFAULT_SOCKET.
+/* Default daemon socket path: the shared compile-time constant so the CLI's
+ * start/stop probe and the daemon's Windows default cannot drift apart.
  * Used as the probe target when the user did not pass --unix to start. */
-#define START_DEFAULT_SOCKET "/var/run/offs.sock"
+#define START_DEFAULT_SOCKET OFFS_LOCAL_SOCKET_PATH
 
 /* Forward declaration: cmd_start checks this before forking to refuse a
  * double-start, and cmd_stop / cmd_restart use it as a liveness test. */

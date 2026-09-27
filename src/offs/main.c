@@ -5,11 +5,12 @@
 #include "client.h"
 #include "cli_util.h"
 #include "l10n/en.h"
+#include "../Service/local_socket.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
-#define DEFAULT_SOCKET "/var/run/offs.sock"
+#define DEFAULT_SOCKET OFFS_LOCAL_SOCKET_PATH
 
 static const char* g_socket_path = DEFAULT_SOCKET;
 static const char* g_lang = "en";
