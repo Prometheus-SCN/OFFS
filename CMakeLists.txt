@@ -175,6 +175,41 @@ target_include_directories(offs-metrics PRIVATE ${CMAKE_BINARY_DIR}/deps/libcbor
 target_include_directories(offs-metrics PRIVATE ${POLL_DANCER_ROOT}/include)
 target_include_directories(offs-metrics PRIVATE ${POLL_DANCER_ROOT}/src)
 
+# --- Windows version resources ---
+# MSI keeps an existing versioned file when the incoming one is unversioned,
+# so every executable carries a version resource — a machine that still has
+# the old js-offs Electron app (FileVersion 0.1.0) installed then gets our
+# offs.exe over its own (equal versions overwrite).
+if(WIN32)
+  foreach(_rc_target offsd offs_cli offs-updater offs-metrics)
+    string(REPLACE "_" "-" _rc_filename "${_rc_target}")
+    if(_rc_target STREQUAL "offs_cli")
+      set(_rc_filename "offs")
+    endif()
+    set(OFFS_RC_TARGET "${_rc_target}")
+    set(OFFS_RC_FILENAME "${_rc_filename}.exe")
+    if(_rc_target STREQUAL "offsd")
+      set(OFFS_RC_DESCRIPTION "OFFS node daemon")
+    elseif(_rc_target STREQUAL "offs_cli")
+      set(OFFS_RC_DESCRIPTION "OFFS command line client")
+    elseif(_rc_target STREQUAL "offs-updater")
+      set(OFFS_RC_DESCRIPTION "OFFS updater")
+    else()
+      set(OFFS_RC_DESCRIPTION "OFFS metrics server")
+    endif()
+    configure_file(src/Version/version.rc.in
+                   "${CMAKE_CURRENT_BINARY_DIR}/${_rc_target}_version.rc"
+                   @ONLY)
+    target_sources(${_rc_target} PRIVATE
+                   "${CMAKE_CURRENT_BINARY_DIR}/${_rc_target}_version.rc")
+    unset(OFFS_RC_TARGET)
+    unset(OFFS_RC_FILENAME)
+    unset(OFFS_RC_DESCRIPTION)
+  endforeach()
+  unset(_rc_target)
+  unset(_rc_filename)
+endif()
+
 # --- Docker container targets ---
 find_program(DOCKER docker)
 if(DOCKER)
