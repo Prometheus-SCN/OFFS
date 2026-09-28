@@ -1667,6 +1667,11 @@ static int _run_offsd(int argc, char** argv) {
     return parse_result > 0 ? 0 : 1;
   }
 
+  /* An explicit --cache-dir flag or the config file's [cache].dir (both
+     land in args.cache_dir above) beats a staged pending relocation —
+     captured before the platform defaults fill below. */
+  const char* explicit_cache_dir = args.cache_dir;
+
   /* Default state directories by context when not configured: root /
      service contexts get the system paths, regular users their XDG
      (macOS Library / Windows LOCALAPPDATA) paths. Explicit flags and the
@@ -1747,6 +1752,22 @@ static int _run_offsd(int argc, char** argv) {
      after _startup — the old _apply_pending_config destroyed the shared pool the
      transport had already borrowed. */
   config_t* cfg = _load_pending_override(args.config_dir);
+
+  /* A staged pending cache_dir relocations the block cache — it applies
+     only on a fresh process start (the cache opens in _startup below,
+     never on the reload cycles further down, which re-use cfg for
+     everything else), and only when neither --cache-dir nor
+     [cache].dir configured one. The platform default fill above ran
+     before the pending file was read, so substitute it here. */
+  if (cfg != NULL && cfg->cache_dir != NULL && explicit_cache_dir == NULL) {
+    free((void*)args.cache_dir);
+    args.cache_dir = strdup(cfg->cache_dir);
+    if (args.cache_dir == NULL) {
+      config_free_members(cfg);
+      free(cfg);
+      return 1;
+    }
+  }
 
   offsd_server_t server;
   for (;;) {
