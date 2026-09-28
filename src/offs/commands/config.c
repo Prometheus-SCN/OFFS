@@ -3,6 +3,7 @@
 //
 
 #include "../client.h"
+#include "../cli_util.h"
 #include "../l10n/en.h"
 #include "ClientAPI/client_api_wire.h"
 #include "Util/bcrypt.h"
@@ -34,7 +35,8 @@ static void _print_config_help(void) {
     "    https_cert_path       Path to the HTTPS server certificate PEM\n"
     "    https_key_path        Path to the HTTPS server private key PEM\n"
     "    tcp_tls_cert_path     Path to the TCP transport TLS certificate PEM\n"
-    "    tcp_tls_key_path      Path to the TCP transport TLS private key PEM\n\n"
+    "    tcp_tls_key_path      Path to the TCP transport TLS private key PEM\n"
+    "    cache_dir             Block cache directory (restart only; prefer offs cache move)\n\n"
     "  Bool fields (set to true/false or 1/0):\n"
     "    http_enabled          Enable the HTTP server\n"
     "    https_enabled         Enable the HTTPS server\n"
@@ -71,19 +73,6 @@ static int _is_bcrypt_hash(const char* s) {
   return 1;
 }
 
-/* Print an error frame if the response is one. Returns 1 if it was an error
-   frame (already printed), 0 otherwise. */
-static int _print_error_if(cbor_item_t* response) {
-  if (client_api_wire_get_type(response) != CLIENT_API_ERROR) return 0;
-  client_api_error_t err;
-  memset(&err, 0, sizeof(err));
-  if (client_api_error_decode(response, &err) == 0) {
-    fprintf(stderr, "%s: %s\n", L10N_ERROR, err.message);
-    client_api_error_destroy(&err);
-  }
-  return 1;
-}
-
 /* Send CONFIG_SHOW_REQUEST and return the parsed JSON string (heap, caller
    frees), or NULL on failure (error already printed). */
 static char* _config_show(cli_client_t* client) {
@@ -107,7 +96,7 @@ static char* _config_show(cli_client_t* client) {
     }
     client_api_config_show_response_destroy(&resp);
   } else {
-    _print_error_if(response);
+    cli_print_error_if(response);
   }
   cbor_decref(&response);
   return json_str;
@@ -147,7 +136,7 @@ static int _config_send_set(cli_client_t* client, const char* field,
       fprintf(stderr, "%s: invalid config set response\n", L10N_ERROR);
     }
   } else {
-    _print_error_if(response);
+    cli_print_error_if(response);
   }
   cbor_decref(&response);
   return rc;
@@ -226,7 +215,7 @@ static int _cmd_reload(cli_client_t* client) {
       fprintf(stderr, "%s: invalid config reload response\n", L10N_ERROR);
     }
   } else {
-    _print_error_if(response);
+    cli_print_error_if(response);
   }
   cbor_decref(&response);
   return rc;

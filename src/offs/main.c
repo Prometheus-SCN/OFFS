@@ -5,14 +5,10 @@
 #include "client.h"
 #include "cli_util.h"
 #include "l10n/en.h"
-#include "../Service/local_socket.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
-#define DEFAULT_SOCKET OFFS_LOCAL_SOCKET_PATH
-
-static const char* g_socket_path = DEFAULT_SOCKET;
 static const char* g_lang = "en";
 
 int main(int argc, char** argv) {
@@ -29,7 +25,7 @@ int main(int argc, char** argv) {
   for (int read_idx = 1; read_idx < argc; read_idx++) {
     if (strcmp(argv[read_idx], "--socket") == 0) {
       if (read_idx + 1 < argc) {
-        g_socket_path = argv[read_idx + 1];
+        cli_set_socket_path(argv[read_idx + 1]);
         read_idx++;  /* consume the value too */
       }
       continue;
@@ -64,10 +60,13 @@ int main(int argc, char** argv) {
    * stop uses process signals (pgrep/pkill), not the client connection — requiring
    * a connection meant `offs stop` couldn't reach cmd_stop if the daemon was
    * running on a different socket. config help/--help is pure client-side
-   * (prints the field reference) and should work without a running daemon. */
+   * (prints the field reference) and should work without a running daemon.
+   * cache self-connects: `offs cache size` falls back to staging when the
+   * daemon is unreachable, so main must not exit on a failed connect first. */
   int needs_client = 1;
   if (strcmp(command_name, "start") == 0 || strcmp(command_name, "stop") == 0 ||
-      strcmp(command_name, "restart") == 0 || strcmp(command_name, "version") == 0) {
+      strcmp(command_name, "restart") == 0 || strcmp(command_name, "version") == 0 ||
+      strcmp(command_name, "cache") == 0) {
     needs_client = 0;
   } else if (strcmp(command_name, "config") == 0 && argc > arg_offset + 1 &&
              (strcmp(argv[arg_offset + 1], "help") == 0 ||
@@ -89,9 +88,9 @@ int main(int argc, char** argv) {
 
   cli_client_t* client = NULL;
   if (needs_client) {
-    client = cli_client_create(g_socket_path);
+    client = cli_client_create(cli_socket_path());
     if (cli_client_connect(client) != 0) {
-      fprintf(stderr, "%s: %s\n", L10N_DAEMON_UNREACHABLE, g_socket_path);
+      fprintf(stderr, "%s: %s\n", L10N_DAEMON_UNREACHABLE, cli_socket_path());
       cli_client_destroy(client);
       return 1;
     }

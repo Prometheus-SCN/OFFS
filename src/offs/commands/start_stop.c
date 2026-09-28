@@ -173,6 +173,19 @@ static int _is_daemon_running(void) {
 #endif
 }
 
+int cli_daemon_is_running(void) {
+  return _is_daemon_running();
+}
+
+int cli_daemon_wait_stopped(int timeout_ms) {
+  int waited_ms = 0;
+  while (_is_daemon_running() && waited_ms < timeout_ms) {
+    platform_sleep_ms(100);
+    waited_ms += 100;
+  }
+  return _is_daemon_running() ? -1 : 0;
+}
+
 int cmd_stop(int argc, char** argv, cli_client_t* client) {
   (void)argc; (void)argv; (void)client;
 
@@ -373,12 +386,7 @@ int cmd_restart(int argc, char** argv, cli_client_t* client) {
    * if it doesn't go down, warn but proceed rather than blocking forever.
    * cmd_start's own probe (added in #16) verifies the new daemon came up
    * and returns 1 if it didn't, so restart no longer exits 0 with no daemon. */
-  int waited_ms = 0;
-  while (_is_daemon_running() && waited_ms < 10000) {
-    platform_sleep_ms(100);
-    waited_ms += 100;
-  }
-  if (_is_daemon_running()) {
+  if (cli_daemon_wait_stopped(10000) != 0) {
     fprintf(stderr, "Warning: old daemon still running after 10s; proceeding with restart\n");
   }
 
