@@ -18,16 +18,23 @@ const char* mime_type_from_extension(const char* filename);
 #include <stdlib.h>
 #include <string.h>
 #include "Platform/platform_posix_compat.h"  /* isatty, STDERR_FILENO */
+#include "Network/stream_framer.h"
 #include <errno.h>
 
-#define PUT_CHUNK_SIZE (63 * 1024 * 1024)  /* just under 64 MB OFFS_MAX_CBOR_MESSAGE_SIZE */
+/* PUT_DATA frames ride the local-RPC wire framer, which caps a single frame
+ * at STREAM_FRAMER_MAX_FRAME_SIZE (2 MB): stream_frame_encode returns NULL
+ * for anything larger and the daemon-side framer rejects it on receipt. The
+ * 64 MB OFFS_MAX_CBOR_MESSAGE_SIZE limit applies to decoded messages, not the
+ * framed wire format, so chunks must stay under the framer cap — 1 MB leaves
+ * ample room for CBOR and length-prefix overhead. */
+#define PUT_CHUNK_SIZE (1024 * 1024)
 
 static void _print_put_help(void) {
   printf(
     "offs put — import a file into the OFFS network\n\n"
     "Usage: offs put <file> [--temporary] [--recycler <url>] [--tuple-size N]\n"
     "                   [--recycle-ephemeral commit|propagate]\n\n"
-    "Streams the file to the daemon in 63 MiB chunks. The content type is\n"
+    "Streams the file to the daemon in 1 MiB chunks. The content type is\n"
     "detected from the file extension (e.g. .mp4 -> video/mp4); unknown\n"
     "extensions fall back to application/octet-stream.\n\n"
     "Flags:\n"
@@ -63,19 +70,15 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
     return 1;
   }
 
-  /* --help can appear at any position (including argv[0] when the user runs
-   * "offs put --help" with no file). Scan for it before taking argv[0] as the
-   * file path. Use the --help flag form (not the bare 'help' subcommand)
-   * because put takes a positional file arg — 'put help' would block
-   * importing a file literally named "help". */
-  for (int i = 0; i < argc; i++) {
-    if (strcmp(argv[i], "--help") == 0) {
-      _print_put_help();
-      return 0;
-    }
-  }
-
-  const char* file_path = argv[0];
+  /* Flags may appear before or after the positional file argument (e.g.
+   * "offs put --tuple-size 2 movie.mp4"), so parse every argument first and
+   * take the first non-flag argument as the file. argv[0] is NOT assumed to
+   * be the file: with a leading flag it is the flag itself, and fopen-ing it
+   * failed with a confusing "No such file or directory". Use the --help flag
+   * form (not the bare 'help' subcommand) because put takes a positional
+   * file arg — 'put help' would block importing a file literally named
+   * "help". */
+  const char* file_path = NULL;
   uint8_t temporary = 0;
   char* recycler_url = NULL;
   uint8_t has_tuple_size = 0;
@@ -83,8 +86,11 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
   /* recycle_ephemeral_e: 0 = none, 1 = commit, 2 = propagate */
   uint8_t recycle_ephemeral = 0;
 
-  for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--temporary") == 0) {
+  for (int i = 0; i < argc; i++) {
+    if (strcmp(argv[i], "--help") == 0) {
+      _print_put_help();
+      return 0;
+    } else if (strcmp(argv[i], "--temporary") == 0) {
       temporary = 1;
     } else if (strcmp(argv[i], "--recycler") == 0) {
       if (i + 1 >= argc) {
@@ -125,7 +131,16 @@ int cmd_put(int argc, char** argv, cli_client_t* client) {
        * proceeded with default settings. */
       fprintf(stderr, "Error: unknown flag '%s'\n", argv[i]);
       return 1;
+    } else if (file_path == NULL) {
+      /* First non-flag argument is the positional file path. Extra
+       * positional arguments are ignored, matching the previous behavior. */
+      file_path = argv[i];
     }
+  }
+
+  if (file_path == NULL) {
+    fprintf(stderr, "%s\n", L10N_PUT_USAGE);
+    return 1;
   }
 
   /* recycle-ephemeral only governs how recycler-sourced blocks join the

@@ -143,6 +143,7 @@ int cli_client_send_frame(cli_client_t* client, cbor_item_t* frame) {
   cbor_len = cbor_serialize_alloc(frame, &cbor_buf, &cbor_len);
   if (cbor_buf == NULL || cbor_len == 0) {
     free(cbor_buf);
+    errno = ENOMEM;
     return -1;
   }
 
@@ -151,6 +152,9 @@ int cli_client_send_frame(cli_client_t* client, cbor_item_t* frame) {
   free(cbor_buf);
 
   if (framed == NULL || framed_len == 0) {
+    /* stream_frame_encode NULLs frames above STREAM_FRAMER_MAX_FRAME_SIZE;
+     * report that distinctly instead of leaving errno unset ("No error"). */
+    errno = EMSGSIZE;
     free(framed);
     return -1;
   }
