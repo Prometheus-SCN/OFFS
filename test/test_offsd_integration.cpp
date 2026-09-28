@@ -321,13 +321,26 @@ protected:
     ASSERT_NE(temp_dir, nullptr) << "failed to create temp dir";
 
     size_t base_len = strlen(temp_dir);
-    socket_path = (char*)malloc(base_len + 32);
+    socket_path = (char*)malloc(base_len + 64);
     cache_dir = (char*)malloc(base_len + 32);
     data_dir = (char*)malloc(base_len + 32);
     ASSERT_NE(socket_path, nullptr);
     ASSERT_NE(cache_dir, nullptr);
     ASSERT_NE(data_dir, nullptr);
-    snprintf(socket_path, base_len + 32, "%s/offs.sock", temp_dir);
+    /* Windows named-pipe names keep only the socket path's BASENAME, so a
+     * plain "offs.sock" here would collide with every other daemon using the
+     * same basename — including the installed service — and the test's
+     * commands could be served by the wrong instance. Reuse the temp dir's
+     * unique leaf (offsd-itest-<pid>-<counter>) as the basename. */
+    const char* leaf = strrchr(temp_dir,
+#ifdef _WIN32
+                               '\\'
+#else
+                               '/'
+#endif
+    );
+    leaf = (leaf != NULL) ? leaf + 1 : temp_dir;
+    snprintf(socket_path, base_len + 64, "%s/%s.sock", temp_dir, leaf);
     snprintf(cache_dir, base_len + 32, "%s/cache", temp_dir);
     snprintf(data_dir, base_len + 32, "%s/data", temp_dir);
     ASSERT_EQ(make_dir(cache_dir), 0) << "mkdir cache failed";
