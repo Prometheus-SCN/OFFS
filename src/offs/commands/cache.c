@@ -29,6 +29,11 @@
 #include <sys/stat.h>
 #include <ctype.h>
 #include <stdint.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 /* Extern from commands/start_stop.c — the move flow owns its stop/start
    cycle and calls these directly (no client connection is used by them). */
@@ -117,7 +122,11 @@ static int _cache_size_apply(uint64_t bytes) {
   memset(&req, 0, sizeof(req));
   req.capacity_bytes = bytes;
   cbor_item_t* request = client_api_cache_resize_request_encode(&req);
-  if (request == NULL) { rc = 1; goto out; }
+  if (request == NULL) {
+    fprintf(stderr, "%s\n", L10N_CACHE_SIZE_ENCODE);
+    rc = 1;
+    goto out;
+  }
 
   cbor_item_t* response = cli_client_send(client, request);
   cbor_decref(&request);
@@ -245,6 +254,25 @@ static int _cmd_cache_size(int argc, char** argv) {
 
 /* --- move subcommand ------------------------------------------------------ */
 
+/* Make path absolute against the process cwd when it is relative, so a
+   staged cache_dir does not depend on whatever cwd the daemon later
+   starts with. Returns 0 with out filled, -1 when it does not fit. */
+static int _absolutize(const char* path, char* out, size_t out_size) {
+#ifdef _WIN32
+  DWORD len = GetFullPathNameA(path, (DWORD)out_size, out, NULL);
+  return (len > 0 && len < out_size) ? 0 : -1;
+#else
+  if (path[0] == '/') {
+    if (snprintf(out, out_size, "%s", path) >= (int)out_size) return -1;
+    return 0;
+  }
+  char cwd[512];
+  if (getcwd(cwd, sizeof(cwd)) == NULL) return -1;
+  if (snprintf(out, out_size, "%s/%s", cwd, path) >= (int)out_size) return -1;
+  return 0;
+#endif
+}
+
 static int _cmd_cache_move(int argc, char** argv) {
   const char* dest_text = NULL;
   const char* from_flag = NULL;
@@ -286,7 +314,10 @@ static int _cmd_cache_move(int argc, char** argv) {
   }
 
   char dest[1024];
-  snprintf(dest, sizeof(dest), "%s", dest_text);
+  if (_absolutize(dest_text, dest, sizeof(dest)) != 0) {
+    fprintf(stderr, L10N_CACHE_DEST_NOT_DIR, dest_text);
+    return 1;
+  }
 
   if (unsafe) {
     fprintf(stderr, "%s\n", L10N_CACHE_UNSAFE_WARNING);
@@ -313,8 +344,17 @@ static int _cmd_cache_move(int argc, char** argv) {
     fprintf(stderr, "%s\n", L10N_CACHE_STAGE_FAILED);
     return 1;
   }
+  char resolved_src[1024];
+  if (cli_cache_resolve_current(from_flag, config_dir, resolved_src,
+                                sizeof(resolved_src)) != 0) {
+    fprintf(stderr, "%s\n", L10N_CACHE_SRC_UNRESOLVED);
+    return 1;
+  }
+  /* The config file or a flag may name the source relative to the caller's
+     cwd; the staged cache_dir and the move must agree on the same place the
+     daemon will see. */
   char src[1024];
-  if (cli_cache_resolve_current(from_flag, config_dir, src, sizeof(src)) != 0) {
+  if (_absolutize(resolved_src, src, sizeof(src)) != 0) {
     fprintf(stderr, "%s\n", L10N_CACHE_SRC_UNRESOLVED);
     return 1;
   }
@@ -371,17 +411,23 @@ static int _cmd_cache_move(int argc, char** argv) {
   char failed_path[1024];
   int verify_mode = unsafe ? FILE_VERIFY_NONE : FILE_VERIFY_SHA256;
   if (cli_cache_move_tree(src, dest, verify_mode, failed_path, sizeof(failed_path)) != 0) {
+    /* Revert staging FIRST so the daemon stays on the old location; files
+       that moved before the failure stay at dest and the nonempty-dest
+       check rejects a retried move until they are cleared. */
+    int reverted = (_stage_string_or_null(config_dir, "cache_dir", NULL) == 0);
     fprintf(stderr, L10N_CACHE_MOVE_FAILED, failed_path, dest);
-    /* Revert staging so the daemon stays on the old location. Files that
-       moved before the failure stay at dest; the nonempty-dest check
-       rejects a retried move until they are cleared. */
-    _stage_string_or_null(config_dir, "cache_dir", NULL);
+    if (!reverted) {
+      fprintf(stderr, L10N_CACHE_REVERT_FAILED, dest);
+    }
     if (was_running) cmd_start(0, NULL, NULL);
     return 1;
   }
 
-  /* The move emptied the tree; remove the source directory shell. */
-  rm_rf(src);
+  /* The move emptied the tree; remove the source directory shell. A
+     leftover shell is harmless — the daemon already runs from dest. */
+  if (rm_rf(src) != 0) {
+    fprintf(stderr, L10N_CACHE_SRC_SHELL_LEFT, src);
+  }
   printf(L10N_CACHE_MOVED, src, dest);
   if (was_running) cmd_start(0, NULL, NULL);
   return 0;

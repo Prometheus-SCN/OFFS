@@ -114,6 +114,7 @@
 #define L10N_CACHE_SIZE_STAGED      "Cache capacity staged (%llu bytes); applies at the next daemon start\n"
 #define L10N_CACHE_SIZE_REJECTED    "Error: cache resize rejected (status %u)\n"
 #define L10N_CACHE_SIZE_DECODE      "Error: failed to decode cache resize response"
+#define L10N_CACHE_SIZE_ENCODE      "Error: failed to encode the resize request"
 #define L10N_CACHE_MOVE_USAGE       "Usage: offs cache move <destination> [--from <dir>] [--config-dir <dir>] [--unsafe] [--keep]"
 #define L10N_CACHE_DEST_NOT_DIR     "Error: %s is not a usable directory"
 #define L10N_CACHE_DEST_NOT_EMPTY   "Error: %s is not empty"
@@ -122,10 +123,12 @@
 #define L10N_CACHE_UNSAFE_WARNING   "Warning: --unsafe deletes each source file right after copying it, without verification; a failure could cause data loss"
 #define L10N_CACHE_STOP_FAILED      "Error: failed to stop the daemon; nothing was changed"
 #define L10N_CACHE_STAGE_FAILED     "Error: failed to write the pending config"
-#define L10N_CACHE_MOVE_FAILED      "Error: cache move failed at %s; the pending config was reverted — destination %s may hold partially moved files\n"
+#define L10N_CACHE_MOVE_FAILED      "Error: cache move failed at %s; destination %s may hold partially moved files\n"
+#define L10N_CACHE_REVERT_FAILED    "Warning: the pending cache_dir revert FAILED; the daemon would start using %s with partial content — clear the staged cache_dir before restarting it\n"
 #define L10N_CACHE_MOVED            "Cache moved: %s -> %s\n"
+#define L10N_CACHE_SRC_SHELL_LEFT   "Warning: the emptied source directory %s could not be removed; nothing is wrong with the move itself\n"
 #define L10N_CACHE_NO_CONTENT       "Nothing to move: %s is missing or empty; new location staged\n"
-#define L10N_CACHE_KEEP_STAGED      "Staged cache location %s (--keep: the move happens when the daemon next restarts; run again without --keep to move now)\n"
+#define L10N_CACHE_KEEP_STAGED      "Staged cache location %s (--keep: the daemon starts using it at its next start and the source content stays behind; run again without --keep to move the content now)\n"
 #define L10N_CACHE_SRC_UNRESOLVED   "Error: could not resolve the current cache directory; pass --from <dir>"
 
 #endif // OFFS_L10N_EN_H
