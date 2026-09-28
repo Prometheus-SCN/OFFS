@@ -140,7 +140,7 @@ TEST(CommandTableTest, ExpectedCommandsExist) {
   const char* expected[] = {
     "start", "stop", "restart", "put", "get", "load", "block",
     "ephemeral", "pin", "unpin", "peer", "bootstrap",
-    "config", "friend", "health", "status", "version", "help", NULL
+    "config", "cache", "friend", "health", "status", "version", "help", NULL
   };
 
   for (int exp = 0; expected[exp] != NULL; exp++) {
@@ -160,7 +160,7 @@ TEST(CommandTableTest, TableCount) {
   ASSERT_NE(commands, nullptr);
   int count = 0;
   while (commands[count].name != NULL) count++;
-  EXPECT_EQ(count, 18);
+  EXPECT_EQ(count, 19);
 }
 
 TEST(LangDetectionTest, ReturnsEnWhenNoEnvVars) {
