@@ -1636,32 +1636,17 @@ static int _run_offsd(int argc, char** argv) {
      the network entry points (relay + bootstrap) as a config-file default
      instead of baking them into the binary. Explicit --config disables the
      fallback entirely; CLI flags still override values from the file
-     (config parsing only fills fields the flags left NULL). */
-  if (args.config_path == NULL) {
-    const char* default_config = getenv("OFFS_CONFIG");
-#ifdef _WIN32
-    char program_data[MAX_PATH];
-    char default_config_buf[MAX_PATH];
-    if ((default_config == NULL || default_config[0] == '\0') &&
-        GetEnvironmentVariableA("ProgramData", program_data,
-                                MAX_PATH) > 0) {
-      int written = snprintf(default_config_buf,
-                             sizeof(default_config_buf),
-                             "%s\\offs\\offs.json", program_data);
-      if (written > 0 && (size_t)written < sizeof(default_config_buf)) {
-        default_config = default_config_buf;
-      }
-    }
-#else
-    if (default_config == NULL || default_config[0] == '\0') {
-      default_config = "/etc/offs/offs.json";
-    }
-#endif
+     (config parsing only fills fields the flags left NULL). The buffer
+     lives at function scope: args.config_path borrows it through
+     _parse_args. */
+  char default_config_buf[1024];
+  if (args.config_path == NULL &&
+      offs_default_config_path_get(default_config_buf,
+                                   sizeof(default_config_buf)) == 0) {
     struct stat default_config_st;
-    if (default_config != NULL &&
-        stat(default_config, &default_config_st) == 0 &&
+    if (stat(default_config_buf, &default_config_st) == 0 &&
         S_ISREG(default_config_st.st_mode)) {
-      args.config_path = default_config;
+      args.config_path = default_config_buf;
     }
   }
 
