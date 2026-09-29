@@ -433,6 +433,220 @@ static int _cmd_cache_move(int argc, char** argv) {
   return 0;
 }
 
+/* --- gc subcommand -------------------------------------------------------- */
+
+/* Keep-list failure reasons (liboffs BlockCache/block_gc.h GC_LINE_*) —
+   mirrored here as literals because the CLI does not link the daemon-side
+   BlockCache headers. The HTTP route answers with the same names. */
+static const char* _gc_reason_name(uint8_t reason) {
+  switch (reason) {
+    case 1: return "malformed_url";
+    case 2: return "missing_descriptor";
+    case 3: return "malformed_descriptor";
+    case 4: return "cycle";
+    default: return "unknown";
+  }
+}
+
+/* Read the keep-list file into a NUL-terminated buffer capped at
+   CLIENT_API_GC_MAX_URLS_TEXT (the wire pair's own cap; the daemon rejects
+   anything larger on decode, so gate it here with a specific message).
+   Returns 0 with *out set (caller frees) on success, -1 on an I/O error
+   (already perror'd), 1 when the file is empty, 2 when it exceeds the cap. */
+static int _read_gc_keep_file(const char* path, char** out) {
+  FILE* file = fopen(path, "rb");
+  if (file == NULL) {
+    perror(path);
+    return -1;
+  }
+  const long cap = (long)CLIENT_API_GC_MAX_URLS_TEXT;
+  long file_length = -1;
+  if (fseek(file, 0, SEEK_END) == 0) {
+    file_length = ftell(file);
+  }
+  if (file_length < 0) {
+    perror("fseek");
+    fclose(file);
+    return -1;
+  }
+  if (file_length == 0) {
+    fclose(file);
+    return 1;
+  }
+  if (file_length > cap) {
+    fclose(file);
+    return 2;
+  }
+  rewind(file);
+  char* text = (char*)malloc((size_t)file_length + 1);
+  if (text == NULL) {
+    perror("malloc");
+    fclose(file);
+    return -1;
+  }
+  if (fread(text, 1, (size_t)file_length, file) != (size_t)file_length) {
+    perror("fread");
+    free(text);
+    fclose(file);
+    return -1;
+  }
+  text[file_length] = '\0';
+  fclose(file);
+  *out = text;
+  return 0;
+}
+
+/* Send the keep-list sweep to the daemon. Returns 0 when the sweep completed
+   (failed lines still reported as warnings), 1 when it was refused or the
+   exchange failed, -1 when the daemon is unreachable. */
+static int _cache_gc_apply(const char* urls_text, uint8_t force, uint8_t defrag) {
+  cli_client_t* client = cli_client_create(cli_socket_path());
+  if (client == NULL) return -1;
+  int rc = -1;
+
+  if (cli_client_connect(client) != 0) goto out;
+
+  client_api_gc_request_t req;
+  memset(&req, 0, sizeof(req));
+  req.urls = (char*)urls_text;  /* borrowed for the encode call */
+  req.force = force;
+  req.defrag = defrag;
+  cbor_item_t* request = client_api_gc_request_encode(&req);
+  if (request == NULL) {
+    fprintf(stderr, "%s\n", L10N_CACHE_GC_ENCODE);
+    rc = 1;
+    goto out;
+  }
+
+  cbor_item_t* response = cli_client_send(client, request);
+  cbor_decref(&request);
+  if (response == NULL) goto out;  /* unreachable mid-exchange */
+
+  uint8_t type = client_api_wire_get_type(response);
+  if (type == CLIENT_API_ERROR) {
+    cli_print_error_if(response);
+    cbor_decref(&response);
+    rc = 1;
+    goto out;
+  }
+  if (type != CLIENT_API_GC_RESPONSE) {
+    fprintf(stderr, L10N_REP_UNEXPECTED_TYPE, type);
+    cbor_decref(&response);
+    rc = 1;
+    goto out;
+  }
+
+  client_api_gc_response_t rep;
+  memset(&rep, 0, sizeof(rep));
+  if (client_api_gc_response_decode(response, &rep) != 0) {
+    fprintf(stderr, "%s\n", L10N_CACHE_GC_DECODE);
+    cbor_decref(&response);
+    rc = 1;
+    goto out;
+  }
+  cbor_decref(&response);
+
+  if (rep.status != 0) {
+    fprintf(stderr, L10N_CACHE_GC_REJECTED "\n", rep.status);
+  } else if (rep.urls_request > rep.urls_collected) {
+    /* The sweep ran but some lines failed; per-line warnings come below. */
+    fprintf(stderr, L10N_CACHE_GC_PARTIAL "\n");
+  }
+  printf(L10N_CACHE_GC_SUMMARY,
+         (unsigned long long)rep.urls_collected,
+         (unsigned long long)rep.urls_request,
+         (unsigned long long)rep.blocks_deleted,
+         (unsigned long long)rep.blocks_kept);
+  printf(L10N_CACHE_GC_SKIPPED,
+         (unsigned long long)rep.skipped_pinned,
+         (unsigned long long)rep.skipped_claimed);
+  if (rep.failed != NULL) {
+    size_t failed_count = cbor_array_size(rep.failed);
+    for (size_t row_index = 0; row_index < failed_count; row_index++) {
+      cbor_item_t* row = cbor_array_get(rep.failed, row_index);
+      cbor_item_t* line_item = cbor_array_size(row) >= 1 ? cbor_array_get(row, 0) : NULL;
+      cbor_item_t* reason_item = cbor_array_size(row) >= 2 ? cbor_array_get(row, 1) : NULL;
+      cbor_item_t* text_item = cbor_array_size(row) >= 3 ? cbor_array_get(row, 2) : NULL;
+      if (line_item != NULL && cbor_isa_uint(line_item) &&
+          reason_item != NULL && cbor_isa_uint(reason_item) &&
+          text_item != NULL && cbor_isa_string(text_item)) {
+        fprintf(stderr, L10N_CACHE_GC_FAILED_LINE,
+                (unsigned long long)cbor_get_uint64(line_item),
+                _gc_reason_name((uint8_t)cbor_get_uint64(reason_item)),
+                (const char*)cbor_string_handle(text_item));
+      }
+      if (line_item != NULL) cbor_decref(&line_item);
+      if (reason_item != NULL) cbor_decref(&reason_item);
+      if (text_item != NULL) cbor_decref(&text_item);
+      cbor_decref(&row);
+    }
+  }
+  if (rep.defrag_applied) {
+    printf(L10N_CACHE_GC_DEFRAG,
+           (unsigned long long)rep.defrag_sections,
+           (unsigned long long)rep.defrag_blocks_relocated);
+  }
+
+  rc = (rep.status == 0) ? 0 : 1;
+  client_api_gc_response_destroy(&rep);
+
+out:
+  cli_client_destroy(client);
+  return rc;
+}
+
+static int _cmd_cache_gc(int argc, char** argv) {
+  const char* from_text = NULL;
+  int force = 0;
+  int defrag = 0;
+  for (int i = 0; i < argc; i++) {
+    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "help") == 0) {
+      printf("%s\n", L10N_CACHE_GC_USAGE);
+      return 0;
+    }
+    if (strcmp(argv[i], "--from") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "%s\n", L10N_CACHE_GC_USAGE);
+        return 1;
+      }
+      from_text = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--force") == 0) { force = 1; continue; }
+    if (strcmp(argv[i], "--defrag") == 0) { defrag = 1; continue; }
+    /* A bare positional has no meaning here: the keep list comes only from
+       --from. Reject anything else instead of sweeping with the wrong data. */
+    fprintf(stderr, "%s\n", L10N_CACHE_GC_USAGE);
+    return 1;
+  }
+  if (from_text == NULL) {
+    fprintf(stderr, "%s\n", L10N_CACHE_GC_FROM_REQUIRED);
+    return 1;
+  }
+
+  char* urls_text = NULL;
+  int read_rc = _read_gc_keep_file(from_text, &urls_text);
+  if (read_rc == 1) {
+    fprintf(stderr, "%s\n", L10N_CACHE_GC_EMPTY_FILE);
+    return 1;
+  }
+  if (read_rc == 2) {
+    fprintf(stderr, "%s\n", L10N_CACHE_GC_TOO_LARGE);
+    return 1;
+  }
+  if (read_rc != 0) {
+    return 1;  /* details already reported via perror */
+  }
+
+  int applied = _cache_gc_apply(urls_text, (uint8_t)force, (uint8_t)defrag);
+  free(urls_text);
+  if (applied == -1) {
+    fprintf(stderr, "%s\n", L10N_CACHE_GC_UNREACHABLE);
+    return 1;
+  }
+  return applied;
+}
+
 /* --- dispatch ------------------------------------------------------------- */
 
 int cmd_cache(int argc, char** argv, cli_client_t* client) {
@@ -443,6 +657,7 @@ int cmd_cache(int argc, char** argv, cli_client_t* client) {
   }
   if (strcmp(argv[0], "size") == 0) return _cmd_cache_size(argc - 1, argv + 1);
   if (strcmp(argv[0], "move") == 0) return _cmd_cache_move(argc - 1, argv + 1);
+  if (strcmp(argv[0], "gc") == 0) return _cmd_cache_gc(argc - 1, argv + 1);
   fprintf(stderr, "%s\n", L10N_CACHE_USAGE);
   return 1;
 }

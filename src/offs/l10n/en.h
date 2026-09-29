@@ -108,7 +108,7 @@
 #define L10N_BOOTSTRAP_BAD_ENDPOINT  "Invalid endpoint"
 
 #define L10N_CACHE_DESC             "Block cache management"
-#define L10N_CACHE_USAGE            "Usage: offs cache <size <value> | move <destination> [--from <dir>] [--config-dir <dir>] [--unsafe] [--keep]>"
+#define L10N_CACHE_USAGE            "Usage: offs cache <size <value> | move <destination> [--from <dir>] [--config-dir <dir>] [--unsafe] [--keep] | gc --from <file> [--force] [--defrag]>"
 #define L10N_CACHE_SIZE_USAGE       "Usage: offs cache size <bytes | <n>KiB|MiB|GiB|TiB|KB|MB|GB|TB>   (e.g. 1TB, 512GiB, 250000000000)"
 #define L10N_CACHE_SIZE_SET         "Cache capacity applied live: %llu bytes (current footprint: %llu bytes)\n"
 #define L10N_CACHE_SIZE_STAGED      "Cache capacity staged (%llu bytes); applies at the next daemon start\n"
@@ -130,5 +130,18 @@
 #define L10N_CACHE_NO_CONTENT       "Nothing to move: %s is missing or empty; new location staged\n"
 #define L10N_CACHE_KEEP_STAGED      "Staged cache location %s (--keep: the daemon starts using it at its next start and the source content stays behind; run again without --keep to move the content now)\n"
 #define L10N_CACHE_SRC_UNRESOLVED   "Error: could not resolve the current cache directory; pass --from <dir>"
+#define L10N_CACHE_GC_USAGE         "Usage: offs cache gc --from <file> [--force] [--defrag]\n\n  Deletes every block in the cache that is not reachable from the\n  newline-delimited list of representation URLs/ORIs in <file>.\n\n  --force    Also delete pinned and ephemeral-claimed blocks\n  --defrag   Chain a defragment pass after the sweep"
+#define L10N_CACHE_GC_FROM_REQUIRED "Error: --from <file> with the newline-delimited keep list is required"
+#define L10N_CACHE_GC_EMPTY_FILE   "Error: keep-list file is empty; nothing to collect from"
+#define L10N_CACHE_GC_TOO_LARGE    "Error: keep-list file is larger than the 4 MiB wire cap"
+#define L10N_CACHE_GC_UNREACHABLE  "Error: could not reach the daemon; the sweep only runs against a reachable, running daemon (there is no staged fallback for a destructive sweep)\n"
+#define L10N_CACHE_GC_ENCODE       "Error: failed to encode the cache gc request"
+#define L10N_CACHE_GC_DECODE       "Error: failed to decode the cache gc response"
+#define L10N_CACHE_GC_PARTIAL      "Warning: not every keep-list line resolved; the failed lines follow\n"
+#define L10N_CACHE_GC_SUMMARY      "Garbage collection complete: %llu/%llu URLs resolved, %llu blocks deleted, %llu blocks kept\n"
+#define L10N_CACHE_GC_SKIPPED      "Skipped: %llu pinned, %llu ephemeral-claimed\n"
+#define L10N_CACHE_GC_FAILED_LINE  "Warning: keep-list line %llu failed (%s): %s\n"
+#define L10N_CACHE_GC_DEFRAG       "Defragment pass: %llu sections touched, %llu blocks relocated\n"
+#define L10N_CACHE_GC_REJECTED     "Error: garbage collection failed (status %u); nothing was deleted"
 
 #endif // OFFS_L10N_EN_H
