@@ -18,6 +18,7 @@
 #include "ClientAPI/client_api_wire.h"
 #include "Configuration/config_pending.h"
 #include "Platform/platform_posix_compat.h"
+#include "Util/allocator.h"
 #include "Util/file_copy.h"
 #include "Util/mkdir_p.h"
 #include "Util/rm_rf.h"
@@ -547,19 +548,23 @@ static int _cache_gc_apply(const char* urls_text, uint8_t force, uint8_t defrag)
   cbor_decref(&response);
 
   if (rep.status != 0) {
+    /* The sweep never ran (e.g. empty-keep refusal); "complete" would be
+       wrong. The failed lines below tell the operator why. */
     fprintf(stderr, L10N_CACHE_GC_REJECTED "\n", rep.status);
-  } else if (rep.urls_request > rep.urls_collected) {
-    /* The sweep ran but some lines failed; per-line warnings come below. */
-    fprintf(stderr, L10N_CACHE_GC_PARTIAL "\n");
+  } else {
+    if (rep.urls_request > rep.urls_collected) {
+      /* The sweep ran but some lines failed; per-line warnings come below. */
+      fprintf(stderr, L10N_CACHE_GC_PARTIAL "\n");
+    }
+    printf(L10N_CACHE_GC_SUMMARY,
+           (unsigned long long)rep.urls_collected,
+           (unsigned long long)rep.urls_request,
+           (unsigned long long)rep.blocks_deleted,
+           (unsigned long long)rep.blocks_kept);
+    printf(L10N_CACHE_GC_SKIPPED,
+           (unsigned long long)rep.skipped_pinned,
+           (unsigned long long)rep.skipped_claimed);
   }
-  printf(L10N_CACHE_GC_SUMMARY,
-         (unsigned long long)rep.urls_collected,
-         (unsigned long long)rep.urls_request,
-         (unsigned long long)rep.blocks_deleted,
-         (unsigned long long)rep.blocks_kept);
-  printf(L10N_CACHE_GC_SKIPPED,
-         (unsigned long long)rep.skipped_pinned,
-         (unsigned long long)rep.skipped_claimed);
   if (rep.failed != NULL) {
     size_t failed_count = cbor_array_size(rep.failed);
     for (size_t row_index = 0; row_index < failed_count; row_index++) {
@@ -570,10 +575,19 @@ static int _cache_gc_apply(const char* urls_text, uint8_t force, uint8_t defrag)
       if (line_item != NULL && cbor_isa_uint(line_item) &&
           reason_item != NULL && cbor_isa_uint(reason_item) &&
           text_item != NULL && cbor_isa_string(text_item)) {
+        /* CBOR string data is not NUL-terminated (cbor_copy reaches strings
+           through cbor_build_stringn, which copies exactly length bytes),
+           so the text must not go to %s straight from cbor_string_handle.
+           Copy it with an explicit terminator first. */
+        size_t text_len = cbor_string_length(text_item);
+        char* text = (char*)get_memory(text_len + 1);
+        memcpy(text, cbor_string_handle(text_item), text_len);
+        text[text_len] = '\0';
         fprintf(stderr, L10N_CACHE_GC_FAILED_LINE,
                 (unsigned long long)cbor_get_uint64(line_item),
                 _gc_reason_name((uint8_t)cbor_get_uint64(reason_item)),
-                (const char*)cbor_string_handle(text_item));
+                text);
+        free(text);
       }
       if (line_item != NULL) cbor_decref(&line_item);
       if (reason_item != NULL) cbor_decref(&reason_item);
