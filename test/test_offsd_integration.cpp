@@ -593,3 +593,428 @@ TEST_F(OffsdIntegrationTest, DaemonRestartsWithPersistedPeerStore) {
   EXPECT_TRUE(health_roundtrip(socket_path))
       << "restarted daemon stopped answering after readiness";
 }
+
+/*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * Keep-list GC (wire pair 58/59) + the offs cache gc CLI subcommand
+ *
+ * The helpers below mirror commands/put.c (PUT_START -> PUT_DATA -> PUT_END ->
+ * PUT_RESPONSE), commands/get.c (GET_START -> [GET_DATA...] -> GET_END) and
+ * commands/pin.c (_pin_op: op 46 -> 47) frame-for-frame, and drive
+ * cmd_cache("gc", ...) directly through cli_set_socket_path so the CLI
+ * exercise the production argument parsing and wire exchange.
+ *━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━*/
+
+extern "C" {
+#include "cli_util.h"
+}
+/* cmd_cache lives in cli_util.c's extern command block, not in cli_util.h. */
+extern "C" int cmd_cache(int argc, char** argv, cli_client_t* client);
+
+namespace gc_itest {
+
+/* PUT a short buffer and pull the returned ORI out of PUT_RESPONSE. Returns
+ * 0 on success with url_out filled. */
+static int itest_put_bytes(const char* socket_path, const char* content,
+                           char* url_out, size_t url_out_size) {
+  size_t len = strlen(content);
+  cli_client_t* client = cli_client_create(socket_path);
+  if (client == NULL) return -1;
+  if (cli_client_connect(client) != 0) {
+    cli_client_destroy(client);
+    return -1;
+  }
+
+  client_api_put_request_t put_req;
+  memset(&put_req, 0, sizeof(put_req));
+  put_req.content_type = (char*)"application/octet-stream";
+  put_req.file_name = (char*)"gc_itest.bin";
+  put_req.stream_length = len;
+  put_req.data = NULL;
+  put_req.data_size = 0;
+
+  cbor_item_t* start_frame = client_api_put_request_encode(&put_req);
+  if (start_frame == NULL) {
+    cli_client_destroy(client);
+    return -1;
+  }
+  int send_rc = cli_client_send_frame(client, start_frame);
+  cbor_decref(&start_frame);
+  if (send_rc != 0) {
+    cli_client_destroy(client);
+    return -1;
+  }
+
+  client_api_put_data_t data_msg;
+  memset(&data_msg, 0, sizeof(data_msg));
+  data_msg.data = (uint8_t*)content;
+  data_msg.data_size = len;
+  cbor_item_t* data_frame = client_api_put_data_encode(&data_msg);
+  if (data_frame == NULL) {
+    cli_client_destroy(client);
+    return -1;
+  }
+  send_rc = cli_client_send_frame(client, data_frame);
+  cbor_decref(&data_frame);
+  if (send_rc != 0) {
+    cli_client_destroy(client);
+    return -1;
+  }
+
+  cbor_item_t* end_frame = client_api_put_end_encode();
+  if (end_frame == NULL) {
+    cli_client_destroy(client);
+    return -1;
+  }
+  send_rc = cli_client_send_frame(client, end_frame);
+  cbor_decref(&end_frame);
+  if (send_rc != 0) {
+    cli_client_destroy(client);
+    return -1;
+  }
+
+  cbor_item_t* response = cli_client_recv_frame(client);
+  int result = -1;
+  if (response != NULL &&
+      client_api_wire_get_type(response) == CLIENT_API_PUT_RESPONSE) {
+    client_api_put_response_t put_resp;
+    memset(&put_resp, 0, sizeof(put_resp));
+    if (client_api_put_response_decode(response, &put_resp) == 0 &&
+        put_resp.ori_string != NULL &&
+        strlen(put_resp.ori_string) < url_out_size) {
+      strcpy(url_out, put_resp.ori_string);
+      result = 0;
+    }
+    client_api_put_response_destroy(&put_resp);
+  }
+  if (response) cbor_decref(&response);
+  cli_client_destroy(client);
+  return result;
+}
+
+/* GET the ORI and report whether the daemon streamed the whole content back:
+ * GET_RESPONSE_START, no mid-stream ERROR frame, everything terminated by
+ * GET_END and the accumulated data length matching content_length. A missing
+ * representation starts with GET_RESPONSE_START (the daemon knows the length
+ * from the descriptor only when it exists — a deleted data set errors
+ * mid-stream), so the bare first-frame type is NOT a resolve signal. Returns
+ * 1 on a clean complete stream, 0 otherwise. */
+static int itest_get_resolves(const char* socket_path, const char* ori) {
+  cli_client_t* client = cli_client_create(socket_path);
+  if (client == NULL) return 0;
+  if (cli_client_connect(client) != 0) {
+    cli_client_destroy(client);
+    return 0;
+  }
+
+  client_api_get_request_t get_req;
+  memset(&get_req, 0, sizeof(get_req));
+  get_req.ori_string = (char*)ori;
+  get_req.has_range = 0;
+
+  cbor_item_t* request = client_api_get_request_encode(&get_req);
+  if (request == NULL) {
+    cli_client_destroy(client);
+    return 0;
+  }
+  /* cli_client_send sends the frame AND reads back the response. */
+  cbor_item_t* response = cli_client_send(client, request);
+  cbor_decref(&request);
+
+  int resolves = 0;
+  if (response == NULL) {
+    cli_client_destroy(client);
+    return 0;
+  }
+  size_t expected_length = 0;
+  size_t accumulated = 0;
+  int saw_end = 0;
+  int had_error = 0;
+  if (client_api_wire_get_type(response) == CLIENT_API_GET_RESPONSE_START) {
+    client_api_get_response_start_t start_msg;
+    memset(&start_msg, 0, sizeof(start_msg));
+    if (client_api_get_response_start_decode(response, &start_msg) == 0) {
+      expected_length = start_msg.content_length;
+      client_api_get_response_start_destroy(&start_msg);
+    }
+    cbor_decref(&response);
+    response = NULL;
+    response = cli_client_recv_frame(client);
+  }
+
+  /* Drain the stream (or the error frame) so the daemon-side connection
+     finishes its response before the client goes away. only a stream that
+     ends with GET_END and no ERROR counts as resolving. The frame cap keeps
+     a pathological daemon from spinning the test forever. */
+  int frame_cap = 256;
+  while (response != NULL && frame_cap-- > 0) {
+    uint8_t type = client_api_wire_get_type(response);
+    if (type == CLIENT_API_GET_END) {
+      saw_end = 1;
+      cbor_decref(&response);
+      response = NULL;
+    } else if (type == CLIENT_API_ERROR) {
+      had_error = 1;
+      cbor_decref(&response);
+      response = NULL;
+      break;
+    } else if (type == CLIENT_API_GET_DATA) {
+      client_api_get_data_t get_data;
+      memset(&get_data, 0, sizeof(get_data));
+      if (client_api_get_data_decode(response, &get_data) == 0) {
+        accumulated += get_data.data_size;
+        client_api_get_data_destroy(&get_data);
+      }
+      cbor_decref(&response);
+      response = cli_client_recv_frame(client);
+    } else {
+      /* Unexpected frame type (e.g. a second START): the daemon did not
+         stream a complete response. */
+      had_error = 1;
+      cbor_decref(&response);
+      response = NULL;
+      break;
+    }
+  }
+  resolves = (saw_end && !had_error &&
+              accumulated == expected_length && expected_length > 0);
+  cli_client_destroy(client);
+  return resolves;
+}
+
+/* Pin a representation's blocks (wire op 46 -> 47). Returns 0 on status 0. */
+static int itest_pin_url(const char* socket_path, const char* url) {
+  cli_client_t* client = cli_client_create(socket_path);
+  if (client == NULL) return -1;
+  if (cli_client_connect(client) != 0) {
+    cli_client_destroy(client);
+    return -1;
+  }
+
+  client_api_rep_request_t pin_req;
+  memset(&pin_req, 0, sizeof(pin_req));
+  pin_req.url = (char*)url;
+
+  cbor_item_t* request = client_api_rep_request_encode(CLIENT_API_REP_PIN_REQUEST,
+                                                       &pin_req);
+  if (request == NULL) {
+    cli_client_destroy(client);
+    return -1;
+  }
+  /* cli_client_send sends the frame AND reads back the response. */
+  cbor_item_t* response = cli_client_send(client, request);
+  cbor_decref(&request);
+  int result = -1;
+  if (response != NULL &&
+      client_api_wire_get_type(response) == CLIENT_API_REP_PIN_RESPONSE) {
+    client_api_rep_response_t pin_resp;
+    memset(&pin_resp, 0, sizeof(pin_resp));
+    if (client_api_rep_response_decode(response, &pin_resp) == 0 &&
+        pin_resp.status == 0) {
+      result = 0;
+    }
+  }
+  if (response) cbor_decref(&response);
+  cli_client_destroy(client);
+  return result;
+}
+
+/* Run the GC over the local IPC wire pair (58 -> 59). rep_out is only touched
+ * when 0 is returned; the caller owns it and must call
+ * client_api_gc_response_destroy. */
+static int itest_wire_gc(const char* socket_path, const char* urls_text,
+                         uint8_t force, uint8_t defrag,
+                         client_api_gc_response_t* rep_out) {
+  cli_client_t* client = cli_client_create(socket_path);
+  if (client == NULL) return -1;
+  if (cli_client_connect(client) != 0) {
+    cli_client_destroy(client);
+    return -1;
+  }
+
+  client_api_gc_request_t gc_req;
+  memset(&gc_req, 0, sizeof(gc_req));
+  gc_req.urls = (char*)urls_text;
+  gc_req.force = force;
+  gc_req.defrag = defrag;
+
+  cbor_item_t* request = client_api_gc_request_encode(&gc_req);
+  if (request == NULL) {
+    cli_client_destroy(client);
+    return -1;
+  }
+  /* cli_client_send sends the frame AND reads back the response. */
+  cbor_item_t* response = cli_client_send(client, request);
+  cbor_decref(&request);
+  int result = -1;
+  if (response != NULL &&
+      client_api_wire_get_type(response) == CLIENT_API_GC_RESPONSE) {
+    if (client_api_gc_response_decode(response, rep_out) == 0) {
+      result = 0;
+    }
+  }
+  if (response) cbor_decref(&response);
+  cli_client_destroy(client);
+  return result;
+}
+
+/* Write a NUL-terminated keep-list file under dir. Returns a malloc'd path
+ * (caller frees) or NULL on failure. */
+static char* itest_write_keep_file(const char* dir, const char* text) {
+  size_t path_len = strlen(dir) + 32;
+  char* path = (char*)malloc(path_len);
+  if (path == NULL) return NULL;
+  snprintf(path, path_len, "%s/gc_keep.txt", dir);
+  FILE* file = fopen(path, "wb");
+  if (file == NULL) {
+    free(path);
+    return NULL;
+  }
+  fwrite(text, 1, strlen(text), file);
+  fclose(file);
+  return path;
+}
+
+TEST_F(OffsdIntegrationTest, CacheGcWireSweepKeepsKeepDeletesDecoy) {
+  if (!daemon_ready) {
+    GTEST_SKIP() << "Daemon failed to start";
+  }
+
+  /* Equal-length bodies mirror test_off_routes_gc.cpp's sweep tallies: one
+     tuple = 3 data blocks + 1 descriptor = 4 blocks per representation. */
+  char keep_url[2048];
+  char decoy_url[2048];
+  ASSERT_EQ(0, itest_put_bytes(socket_path, "gc-keeper-content!!", keep_url,
+                              sizeof(keep_url)));
+  ASSERT_EQ(0, itest_put_bytes(socket_path, "gc-decoy-content!!!!", decoy_url,
+                              sizeof(decoy_url)));
+  ASSERT_TRUE(strstr(keep_url, "/offsystem/v3/") != nullptr);
+  ASSERT_TRUE(strstr(decoy_url, "/offsystem/v3/") != nullptr);
+  ASSERT_STRNE(keep_url, decoy_url);
+
+  /* Both representations resolve before the sweep. */
+  EXPECT_TRUE(itest_get_resolves(socket_path, keep_url));
+  EXPECT_TRUE(itest_get_resolves(socket_path, decoy_url));
+
+  std::string keep_text = std::string(keep_url) + "\n";
+  client_api_gc_response_t rep;
+  memset(&rep, 0, sizeof(rep));
+  ASSERT_EQ(0, itest_wire_gc(socket_path, keep_text.c_str(), 0, 0, &rep));
+
+  EXPECT_EQ(0, rep.status);
+  EXPECT_EQ(1u, rep.urls_request);
+  EXPECT_EQ(1u, rep.urls_collected);
+  /* The daemon deleted exactly the decoy representation's blocks. */
+  EXPECT_EQ(4u, rep.blocks_deleted);
+  EXPECT_EQ(4u, rep.blocks_kept);
+  EXPECT_EQ(0u, rep.skipped_pinned);
+  EXPECT_EQ(0u, rep.skipped_claimed);
+  EXPECT_EQ(0u, rep.defrag_applied);
+  client_api_gc_response_destroy(&rep);
+
+  EXPECT_FALSE(itest_get_resolves(socket_path, decoy_url))
+      << "decoy representation still resolves after the sweep";
+  EXPECT_TRUE(itest_get_resolves(socket_path, keep_url))
+      << "kept representation stopped resolving after the sweep";
+}
+
+TEST_F(OffsdIntegrationTest, CacheGcCliRefusesAllUnresolvable) {
+  if (!daemon_ready) {
+    GTEST_SKIP() << "Daemon failed to start";
+  }
+
+  /* Preload a survivor: the refusal must leave it untouched. */
+  char survivor_url[2048];
+  ASSERT_EQ(0, itest_put_bytes(socket_path, "gc-refusal-survivor!", survivor_url,
+                              sizeof(survivor_url)));
+
+  char* keep_path = itest_write_keep_file(temp_dir,
+                                          "not-a-url\nhttp://localhost/nothing\n");
+  ASSERT_NE(keep_path, nullptr);
+
+  const char* previous = cli_socket_path();
+  cli_set_socket_path(socket_path);
+  char* argv[4] = {(char*)"gc", (char*)"--from", keep_path, NULL};
+  int rc = cmd_cache(3, argv, NULL);
+  if (previous != NULL) cli_set_socket_path(previous);
+  free(keep_path);
+
+  EXPECT_EQ(1, rc) << "an unresolvable keep list must error (rc 1)";
+
+  EXPECT_TRUE(itest_get_resolves(socket_path, survivor_url))
+      << "the refusal deleted pre-existing content";
+}
+
+TEST_F(OffsdIntegrationTest, CacheGcCliPinSparedWithoutForceDeletedWith) {
+  if (!daemon_ready) {
+    GTEST_SKIP() << "Daemon failed to start";
+  }
+
+  char keep_url[2048];
+  char pinned_url[2048];
+  ASSERT_EQ(0, itest_put_bytes(socket_path, "gc-pin-keeper-file!!", keep_url,
+                              sizeof(keep_url)));
+  ASSERT_EQ(0, itest_put_bytes(socket_path, "gc-pinned-decoy-file!", pinned_url,
+                              sizeof(pinned_url)));
+  ASSERT_EQ(0, itest_pin_url(socket_path, pinned_url))
+      << "pin op failed";
+
+  char* keep_path = itest_write_keep_file(temp_dir, keep_url);
+  ASSERT_NE(keep_path, nullptr);
+  std::string keep_dir = std::string(temp_dir);
+
+  /* With the default (no --force) the pinned decoy survives. */
+  const char* previous = cli_socket_path();
+  cli_set_socket_path(socket_path);
+  char* argv[3] = {(char*)"gc", (char*)"--from", keep_path};
+  EXPECT_EQ(0, cmd_cache(3, argv, NULL));
+  EXPECT_TRUE(itest_get_resolves(socket_path, pinned_url))
+      << "pinned decoy was deleted without --force";
+  EXPECT_TRUE(itest_get_resolves(socket_path, keep_url));
+
+  /* --force clears the pin and deletes the decoy. */
+  char* force_argv[5] = {(char*)"gc", (char*)"--from", keep_path,
+                         (char*)"--force", NULL};
+  EXPECT_EQ(0, cmd_cache(4, force_argv, NULL));
+  if (previous != NULL) cli_set_socket_path(previous);
+  free(keep_path);
+
+  EXPECT_FALSE(itest_get_resolves(socket_path, pinned_url))
+      << "pinned decoy survived a --force sweep";
+  EXPECT_TRUE(itest_get_resolves(socket_path, keep_url))
+      << "keeper representation lost to a --force sweep";
+}
+
+TEST_F(OffsdIntegrationTest, CacheGcCliUnreachableDaemonErrors) {
+  /* Point the CLI at a socket nothing serves (unique leaf, so it can never
+     resolve to the installed service's pipe) and confirm rc 1 with no
+     staged fallback. */
+  size_t leaf_len = strlen(temp_dir) + 64;
+  char* quiet_socket = (char*)malloc(leaf_len);
+  ASSERT_NE(quiet_socket, nullptr);
+  const char* leaf = strrchr(temp_dir,
+#ifdef _WIN32
+                             '\\'
+#else
+                             '/'
+#endif
+  );
+  leaf = (leaf != NULL) ? leaf + 1 : temp_dir;
+  snprintf(quiet_socket, leaf_len, "%s/%s.gc-no-daemon.sock", temp_dir, leaf);
+
+  /* The keep file must exist: the CLI errors out on an unreadable file
+     before it ever tries the daemon, and this case is about the connect. */
+  char* keep_path = itest_write_keep_file(temp_dir, "garbage-line\n");
+  ASSERT_NE(keep_path, nullptr);
+
+  const char* previous = cli_socket_path();
+  cli_set_socket_path(quiet_socket);
+  char* argv[3] = {(char*)"gc", (char*)"--from", keep_path};
+  int rc = cmd_cache(3, argv, NULL);
+  if (previous != NULL) cli_set_socket_path(previous);
+  free(keep_path);
+  free(quiet_socket);
+
+  EXPECT_EQ(1, rc) << "an unreachable daemon must error with rc 1";
+}
+
+} /* namespace gc_itest */
