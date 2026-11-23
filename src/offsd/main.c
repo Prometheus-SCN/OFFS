@@ -41,6 +41,7 @@
 #include "Scheduler/scheduler.h"
 #include "Timer/timer_actor.h"
 #include "Configuration/config.h"
+#include "Configuration/config_json.h"
 #include "Configuration/config_pending.h"
 #include "Platform/platform.h"
 #include "Platform/platform_random.h"
@@ -325,6 +326,11 @@ typedef struct {
   const char* wt_cert_path;
   const char* wt_key_path;
   uint8_t     allow_secure;
+  /* Peer rate-limit overrides from network["rate-limits"] — indexed by
+     config.h CONFIG_RATE_TYPE_COUNT order (0 find-block .. 4 ping); 0 = compiled
+     default. */
+  float       rate_limit_rates[5];
+  float       rate_limit_bursts[5];
 } offsd_args_t;
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -488,6 +494,31 @@ static int _parse_config_file(const char* path, offsd_args_t* args) {
               args->respiration_tau_min_ms, args->respiration_tau_max_ms);
       cJSON_Delete(root);
       return -1;
+    }
+    cJSON* rate_limits = cJSON_GetObjectItem(network, "rate-limits");
+    if (rate_limits != NULL) {
+      if (!cJSON_IsObject(rate_limits)) {
+        fprintf(stderr, "Invalid network[rate-limits]: must be an object of "
+                        "{rate_find_block, rate_find_block_burst, ...} (numbers >= 0)\n");
+        cJSON_Delete(root);
+        return -1;
+      }
+      for (cJSON* rl_item = rate_limits->child; rl_item != NULL; rl_item = rl_item->next) {
+        bool is_burst = false;
+        int rate_index = config_rate_field_index(rl_item->string, &is_burst);
+        if (rate_index < 0) continue;  /* unknown keys inside rate-limits are ignored */
+        if (!cJSON_IsNumber(rl_item) || rl_item->valuedouble < 0.0) {
+          fprintf(stderr, "Invalid network[rate-limits][%s]: must be a number >= 0\n",
+                  rl_item->string ? rl_item->string : "(null)");
+          cJSON_Delete(root);
+          return -1;
+        }
+        if (is_burst) {
+          args->rate_limit_bursts[rate_index] = (float)rl_item->valuedouble;
+        } else {
+          args->rate_limit_rates[rate_index] = (float)rl_item->valuedouble;
+        }
+      }
     }
     cJSON* unix_mode = cJSON_GetObjectItem(network, "unix-socket-mode");
     if (unix_mode != NULL && !cJSON_IsString(unix_mode)) {
@@ -998,6 +1029,12 @@ static int _startup(offsd_server_t* server, offsd_args_t* args,
   }
   if (args->respiration_tau_max_ms > 0) {
     server->config.respiration_tau_max_ms = args->respiration_tau_max_ms;
+  }
+  /* Peer rate-limit overrides from network[rate-limits] (0 keeps compiled
+     defaults); hot-changeable at runtime via the config API surface. */
+  for (int rate_index = 0; rate_index < CONFIG_RATE_TYPE_COUNT; rate_index++) {
+    server->config.rate_limit_rates[rate_index] = args->rate_limit_rates[rate_index];
+    server->config.rate_limit_bursts[rate_index] = args->rate_limit_bursts[rate_index];
   }
   /* Failed-PUT block cleanup comes from the config file's [cache] section;
      0 = keep the compiled default (on). */
