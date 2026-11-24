@@ -964,6 +964,13 @@ static int _startup(offsd_server_t* server, offsd_args_t* args,
                     config_t* override_config) {
   memset(server, 0, sizeof(*server));
 
+  /* Raise the soft fd cap to the hard cap BEFORE any subsystem opens files:
+     hours of churn (scheduler + QUIC + cache sections) can exhaust the
+     default 1024, after which every file open fails until restart. */
+  if (platform_raise_nofile_limit() != 0) {
+    fprintf(stderr, "Warning: could not raise RLIMIT_NOFILE to the hard limit\n");
+  }
+
   /* Ensure cache and data directories exist before subsystems use them.
    * config_pending_save writes to {config_dir}/pending_config.json; the block
    * cache writes section files under {cache_dir}. Without this, a missing
