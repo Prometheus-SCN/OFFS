@@ -30,6 +30,7 @@
 #include "Network/endpoint.h"
 #include "Network/peer_book.h"
 #include "Network/network.h"
+#include "Network/quic_listener.h"
 #include "Network/peer_verify.h"
 #include "Network/pem_key.h"
 #include "Platform/platform_dirs.h"
