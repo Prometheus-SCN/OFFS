@@ -1,0 +1,77 @@
+# Multi-stage build for the OFFS daemon variant with NO relay/built-in bootstrap,
+# used for relay-optional validation. Same as Dockerfile.offsd except the
+# bundled config has no relay-url and no bootstrap-peers.
+
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git libnuma-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY deps/liboffs/deps/msquic/submodules/openssl /build/openssl
+WORKDIR /build/openssl
+RUN ./config --prefix=/usr/local --libdir=lib \
+    && make -j$(nproc) \
+    && make install_sw \
+    && ldconfig
+
+COPY deps/liboffs/deps/msquic /build/msquic
+WORKDIR /build/msquic
+RUN mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cmake --install . --prefix /usr/local
+
+ARG POLL_DANCER_ROOT=/build/poll-dancer
+COPY deps/poll-dancer /build/poll-dancer
+WORKDIR /build/poll-dancer
+RUN rm -rf build && mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cp libpoll_dancer.a /usr/local/lib/
+
+COPY deps/liboffs/deps/libcbor /build/libcbor
+WORKDIR /build/libcbor
+RUN rm -rf build && mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build . -j$(nproc) \
+    && cmake --install . --prefix /usr/local
+
+COPY . /build/offs
+WORKDIR /build/offs
+RUN rm -rf build && mkdir build && cd build \
+    && cmake .. \
+       -DCMAKE_BUILD_TYPE=Release \
+       -DPOLL_DANCER_ROOT=/build/poll-dancer \
+    && cmake --build . -j$(nproc) --target offsd offs_cli
+
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnuma1 openssl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/lib/libssl.so.3 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libcrypto.so.3 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libmsquic.so* /usr/local/lib/
+RUN ldconfig
+
+COPY --from=builder /build/offs/build/offsd /usr/bin/offsd
+COPY --from=builder /build/offs/build/offs /usr/bin/offs
+
+RUN mkdir -p /etc/offs/certs /data/cache /data/data
+
+COPY docker/offs-norelay.json /etc/offs/offs.json
+
+COPY docker/offsd-entrypoint.sh /usr/local/bin/offsd-entrypoint.sh
+RUN chmod +x /usr/local/bin/offsd-entrypoint.sh
+
+EXPOSE 23401/udp
+EXPOSE 23402/tcp
+
+ENTRYPOINT ["/usr/local/bin/offsd-entrypoint.sh"]
+CMD ["--host", "0.0.0.0", "--quic-port", "23401", "--port", "23402", \
+     "--cache-dir", "/data/cache", "--config-dir", "/data/data", \
+     "--max-capacity-bytes", "107374182400"]
